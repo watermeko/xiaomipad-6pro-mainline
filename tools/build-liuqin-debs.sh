@@ -37,6 +37,7 @@ power_key_cc=${POWER_KEY_CC:-$(command -v aarch64-linux-gnu-gcc || true)}
 power_keyd_source=${POWER_KEYD_SOURCE:-"$project_root/device/power-key/liuqin-power-keyd.c"}
 uinput_automation_source=${UINPUT_AUTOMATION_SOURCE:-"$project_root/device/input/liuqin-uinput-automation.c"}
 audio_probe_source=${AUDIO_PROBE_SOURCE:-"$project_root/device/audio-topology/liuqin-audio-hwparams-probe.c"}
+slot_success_source=${SLOT_SUCCESS_SOURCE:-"$project_root/device/boot/liuqin-mark-slot-successful.c"}
 power_settings_binary=${POWER_SETTINGS_BINARY:-"$project_root/out/gnome-control-center/gnome-control-center"}
 power_settings_sha256=${POWER_SETTINGS_SHA256:-}
 power_settings_manifest=${POWER_SETTINGS_MANIFEST:-"$project_root/out/gnome-control-center/build-info.json"}
@@ -252,6 +253,19 @@ PY
 		"$audio_probe_source" "$audio_probe_libasound" \
 		-o "$root/usr/local/libexec/liuqin-audio-hwparams-probe"
 	chmod 0755 "$root/usr/local/libexec/liuqin-audio-hwparams-probe"
+	# The A/B slot helper also ships in the initramfs, but liuqin-boot-android
+	# needs it in the running system at a stable path.  Static, like the
+	# initramfs copy: it may have to run when very little else works.
+	LC_ALL=C SOURCE_DATE_EPOCH=0 "$power_key_cc" \
+		-std=c11 -Os -pipe -static -Wall -Wextra -Werror -Wformat=2 \
+		-fstack-protector-strong -D_FORTIFY_SOURCE=3 \
+		-ffile-prefix-map="$project_root"=. -ffile-prefix-map="$root"=/build/liuqin-device-support \
+		-Wl,-z,relro,-z,now -Wl,--build-id=sha1 \
+		"$slot_success_source" -o "$root/usr/local/libexec/liuqin-mark-slot-successful"
+	chmod 0755 "$root/usr/local/libexec/liuqin-mark-slot-successful"
+	grep -qx 'mark=${LIUQIN_MARK_SLOT:-/usr/local/libexec/liuqin-mark-slot-successful}' \
+		"$root/usr/local/bin/liuqin-boot-android" ||
+		die 'liuqin-boot-android no longer points at the packaged slot helper'
 	command -v readelf >/dev/null || die 'readelf is required to verify generated executables'
 	[ "$(LC_ALL=C readelf -h "$root/usr/local/libexec/liuqin-power-keyd" |
 		sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')" = AArch64 ] ||
@@ -274,7 +288,7 @@ PY
 	} >"$root/DEBIAN/postinst"
 	cp "$work/$pkg.preinst" "$root/DEBIAN/preinst"
 	cp "$work/$pkg.postrm" "$root/DEBIAN/postrm"
-	pack "$pkg" arm64 'libasound2t64 (>= 1.2), gnome-control-center (>= 1:50.0), gnome-snapshot, libcamera-ipa, gstreamer1.0-libcamera, gstreamer1.0-libav, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly' \
+	pack "$pkg" arm64 'libasound2t64 (>= 1.2), gnome-control-center (>= 1:50.0)' \
 		'Xiaomi Pad 6 Pro (liuqin) device support: units, helpers, rescue shell, power panel'
 }
 
