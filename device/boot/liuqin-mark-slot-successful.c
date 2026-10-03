@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-/* Check and mark the running liuqin A/B slot successful in the sde GPT, fail closed.
+/* Read and edit liuqin's Qualcomm A/B slot metadata in the sde GPT, fail closed.
  *
  * Qualcomm keeps the A/B state in bits 48-55 of the GPT entry attributes of
  * each slot-suffixed partition:
@@ -7,13 +7,12 @@
  *   b48-b49 priority   b50 active   b51-b53 retry count
  *   b54 successful     b55 unbootable
  *
- * This tool only reads those bits and marks the slot it is running from
- * successful (--mark/--check).  It must never select a slot.  Verified on the
- * device on 2026-09-25: rewriting only the boot_a/boot_b attribute bytes left
- * the tablet unable to boot.  Switching slots on this ABL means swapping the
- * partition type GUIDs of every _a/_b pair and moving the UFS boot LUN, which
- * only the bootloader's own `fastboot --set-active` does.  Dual boot therefore
- * rotates boot images through slot A instead (liuqin-switch).
+ * Only boot_a/boot_b are touched.  ABL selects the slot from the boot_*
+ * entries; the vbmeta/dtbo/vendor_boot/recovery pairs on this device still
+ * carry their factory defaults (0x00FF / 0x007B), which do not follow the
+ * active/inactive pattern at all, and both slots hold byte-identical images
+ * there anyway (see the P0 inventory).  Rewriting them would enlarge an
+ * irreversible GPT write without changing which slot boots.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -32,19 +31,26 @@
 #define ENTRY_COUNT 96U
 #define ENTRY_SIZE 128U
 #define HEADER_SIZE 92U
-#define ENTRIES_SECTORS ((ENTRY_COUNT * ENTRY_SIZE + SECTOR_SIZE - 1) / SECTOR_SIZE)
-#define FIRST_USABLE 6ULL
 #define BOOT_A_FIRST 75014ULL
 #define BOOT_A_LAST 124165ULL
 #define BOOT_B_FIRST 344107ULL
 #define BOOT_B_LAST 393258ULL
+#define ATTR_SHIFT 48
+#define ATTR_BYTE_MASK (0xFFULL << ATTR_SHIFT)
 #define ATTR_PRIORITY_MASK (3ULL << 48)
 #define ATTR_ACTIVE (1ULL << 50)
 #define ATTR_TRIES_MASK (7ULL << 51)
 #define ATTR_SUCCESSFUL (1ULL << 54)
 #define ATTR_UNBOOTABLE (1ULL << 55)
+/* Qualcomm gpt-utils writes these two bytes on `fastboot --set-active`:
+ * 0x3F = priority 3, active, 7 retries; 0x3A = priority 2, inactive, 7
+ * retries.  The factory state recorded in the P0 inventory (boot_a 0x77 =
+ * 0x3F|successful with one retry spent, boot_b 0x7A = 0x3A|successful)
+ * matches exactly. */
+#define AB_SLOT_ACTIVE_VAL 0x3FULL
+#define AB_SLOT_INACTIVE_VAL 0x3AULL
 
-enum op { OP_NONE, OP_MARK, OP_CHECK };
+enum op { OP_NONE, OP_MARK, OP_CHECK, OP_SET_ACTIVE };
 
 static uint32_t le32(const unsigned char *p)
 {
@@ -124,36 +130,20 @@ struct gpt_copy {
 	uint64_t entries_lba;
 };
 
-/* The entry array location is read from each header and validated rather
- * than assumed.  The stock Xiaomi ABL writes the backup array at
- * disk_lbas - 7 (LastUsableLBA = disk_lbas - 8), while a generic GPT tool puts
- * it at disk_lbas - 5; both are legal.  What must hold is that the primary
- * array sits between the primary header and FirstUsableLBA, the backup array
- * between LastUsableLBA and the backup header, and that neither copy overlaps
- * the usable area or the boot_a/boot_b ranges pinned below.  Writes go to the
- * entries_lba that each header declares. */
 static int load_gpt_copy(int fd, uint64_t disk_lbas, uint64_t header_lba,
 			 struct gpt_copy *g, int allow_stale_entries_crc)
 {
 	uint32_t saved_header_crc, saved_entries_crc;
-	uint64_t first_usable, last_usable;
 	unsigned char check[SECTOR_SIZE];
 
 	memset(g, 0, sizeof(*g));
 	g->header_lba = header_lba;
-	if (disk_lbas < 2 * (1 + ENTRIES_SECTORS) + FIRST_USABLE ||
-	    (header_lba != 1 && header_lba != disk_lbas - 1))
-		return -1;
 	if (full_pread(fd, g->header, sizeof(g->header), header_lba * SECTOR_SIZE))
 		return -1;
-	first_usable = le64(g->header + 40);
-	last_usable = le64(g->header + 48);
 	if (memcmp(g->header, "EFI PART", 8) || le32(g->header + 12) != HEADER_SIZE ||
 	    le64(g->header + 24) != header_lba ||
 	    le64(g->header + 32) != (header_lba == 1 ? disk_lbas - 1 : 1) ||
-	    first_usable != FIRST_USABLE ||
-	    last_usable < BOOT_B_LAST ||
-	    last_usable + ENTRIES_SECTORS + 1 >= disk_lbas ||
+	    le64(g->header + 40) != 6 || le64(g->header + 48) != disk_lbas - 6 ||
 	    le32(g->header + 80) != ENTRY_COUNT || le32(g->header + 84) != ENTRY_SIZE)
 		return -1;
 	saved_header_crc = le32(g->header + 16);
@@ -162,15 +152,8 @@ static int load_gpt_copy(int fd, uint64_t disk_lbas, uint64_t header_lba,
 	if (crc32_bytes(check, HEADER_SIZE) != saved_header_crc)
 		return -1;
 	g->entries_lba = le64(g->header + 72);
-	if (header_lba == 1) {
-		if (g->entries_lba < 2 ||
-		    g->entries_lba > first_usable - ENTRIES_SECTORS)
-			return -1;
-	} else {
-		if (g->entries_lba <= last_usable ||
-		    g->entries_lba > header_lba - ENTRIES_SECTORS)
-			return -1;
-	}
+	if (g->entries_lba != (header_lba == 1 ? 2 : disk_lbas - 5))
+		return -1;
 	if (full_pread(fd, g->entries, sizeof(g->entries), g->entries_lba * SECTOR_SIZE))
 		return -1;
 	saved_entries_crc = le32(g->header + 88);
@@ -246,15 +229,26 @@ static int sde_is_unmounted(void)
 	return 1;
 }
 
+static int boot_is_android(int fd, const unsigned char *entry)
+{
+	unsigned char magic[8];
+
+	if (full_pread(fd, magic, sizeof(magic), (off_t)(le64(entry + 32) * SECTOR_SIZE)))
+		return 0;
+	return !memcmp(magic, "ANDROID!", 8);
+}
+
 static void usage(void)
 {
 	fputs("usage: liuqin-mark-slot-successful --mark <a|b>\n"
 	      "       liuqin-mark-slot-successful --check <a|b>\n"
+	      "       liuqin-mark-slot-successful --set-active <a|b> --i-know\n"
 	      "\n"
-	      "--mark   set successful and clear unbootable on the running slot\n"
-	      "--check  report whether that slot is already successful\n"
-	      "\n"
-	      "Slot selection is the bootloader's job (fastboot --set-active).\n",
+	      "--mark        set successful and clear unbootable on the running slot\n"
+	      "--check       report whether that slot is already successful\n"
+	      "--set-active  make the slot the ABL boot target and reboot-select it;\n"
+	      "              --i-know is mandatory, and slot a additionally requires\n"
+	      "              boot_a to start with the ANDROID! boot-image magic\n",
 	      stderr);
 }
 
@@ -274,20 +268,24 @@ int main(int argc, char **argv)
 	static const char slot_name[2] = { 'A', 'B' };
 	const char *path = "/dev/sde";
 	int testing = 0, made_rw = 0, fd = -1, ro = 1, zero = 0, one = 1, rc = 1;
-	int i, slot = -1, other, running;
+	int i, i_know = 0, slot = -1, other, running;
 	enum op op = OP_NONE;
-	uint64_t bytes = 0, disk_lbas, attrs;
+	uint64_t bytes = 0, disk_lbas, attrs, other_attrs = 0;
 	struct stat st;
 	struct gpt_copy primary, backup, verify_primary, verify_backup;
-	unsigned char *pt, *bt, *po, *vp, *vb;
+	unsigned char *pt, *bt, *po, *bo, *vp, *vb;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--test-image") && i + 1 < argc && !testing) {
 			testing = 1;
 			path = argv[++i];
+		} else if (!strcmp(argv[i], "--i-know") && !i_know) {
+			i_know = 1;
 		} else if (i + 1 < argc && op == OP_NONE &&
-			   (!strcmp(argv[i], "--mark") || !strcmp(argv[i], "--check"))) {
-			op = !strcmp(argv[i], "--mark") ? OP_MARK : OP_CHECK;
+			   (!strcmp(argv[i], "--mark") || !strcmp(argv[i], "--check") ||
+			    !strcmp(argv[i], "--set-active"))) {
+			op = !strcmp(argv[i], "--mark") ? OP_MARK :
+			     !strcmp(argv[i], "--check") ? OP_CHECK : OP_SET_ACTIVE;
 			if (parse_slot(argv[++i], &slot)) {
 				usage();
 				return 2;
@@ -316,11 +314,17 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		/* --mark/--check speak only about the slot we are running from. */
-		if (running != slot) {
+		if (op != OP_SET_ACTIVE && running != slot) {
 			fprintf(stderr, "liuqin-slot-success: refusing to touch slot %c "
 				"while running slot %c\n", slot_name[slot], slot_name[running]);
 			return 1;
 		}
+	}
+	/* The --i-know acknowledgement is a CLI guard, not a device guard: it
+	 * applies to the mock image path too, so tests cover it. */
+	if (op == OP_SET_ACTIVE && !i_know) {
+		fprintf(stderr, "liuqin-slot-success: --set-active requires --i-know\n");
+		return 1;
 	}
 
 	if (lstat(path, &st) || (!testing && !S_ISBLK(st.st_mode)) ||
@@ -343,8 +347,7 @@ int main(int argc, char **argv)
 	disk_lbas = bytes / SECTOR_SIZE;
 	if (load_gpt_copy(fd, disk_lbas, 1, &primary, 0) ||
 	    load_gpt_copy(fd, disk_lbas, disk_lbas - 1, &backup, 1) ||
-	    memcmp(primary.header + 56, backup.header + 56, 16) ||
-	    memcmp(primary.header + 40, backup.header + 40, 16))
+	    memcmp(primary.header + 56, backup.header + 56, 16))
 		goto out;
 	pt = find_boot(&primary, slot);
 	po = find_boot(&primary, other);
@@ -355,23 +358,44 @@ int main(int argc, char **argv)
 	 * rebuild the backup array from it rather than merging untrusted attrs. */
 	memcpy(backup.entries, primary.entries, sizeof(primary.entries));
 	bt = find_boot(&backup, slot);
+	bo = find_boot(&backup, other);
 	attrs = le64(pt + 48);
+	other_attrs = le64(po + 48);
 
-	/* The running slot has to look like the one ABL chose. */
-	if ((attrs & ATTR_PRIORITY_MASK) != ATTR_PRIORITY_MASK ||
-	    !(attrs & ATTR_ACTIVE) ||
-	    (!(attrs & ATTR_TRIES_MASK) && !(attrs & ATTR_SUCCESSFUL)))
-		goto out;
-	if (op == OP_CHECK) {
-		if (!(attrs & ATTR_SUCCESSFUL) || (attrs & ATTR_UNBOOTABLE))
+	if (op == OP_SET_ACTIVE) {
+		/* Exactly one slot may claim the active bit; anything else means
+		 * the table does not follow the semantics assumed here. */
+		if (!!(attrs & ATTR_ACTIVE) == !!(other_attrs & ATTR_ACTIVE))
 			goto out;
-		rc = 0;
-		goto out;
+		if (slot == 0 && !boot_is_android(fd, pt)) {
+			fprintf(stderr, "liuqin-slot-success: boot_a does not start with "
+				"ANDROID!; refusing to hand slot A the boot\n");
+			goto out;
+		}
+		attrs = (attrs & ~ATTR_BYTE_MASK) | (AB_SLOT_ACTIVE_VAL << ATTR_SHIFT);
+		other_attrs = (other_attrs & ~ATTR_BYTE_MASK) |
+			      (AB_SLOT_INACTIVE_VAL << ATTR_SHIFT);
+		put_le64(pt + 48, attrs);
+		put_le64(bt + 48, attrs);
+		put_le64(po + 48, other_attrs);
+		put_le64(bo + 48, other_attrs);
+	} else {
+		/* The running slot has to look like the one ABL chose. */
+		if ((attrs & ATTR_PRIORITY_MASK) != ATTR_PRIORITY_MASK ||
+		    !(attrs & ATTR_ACTIVE) ||
+		    (!(attrs & ATTR_TRIES_MASK) && !(attrs & ATTR_SUCCESSFUL)))
+			goto out;
+		if (op == OP_CHECK) {
+			if (!(attrs & ATTR_SUCCESSFUL) || (attrs & ATTR_UNBOOTABLE))
+				goto out;
+			rc = 0;
+			goto out;
+		}
+		attrs |= ATTR_SUCCESSFUL;
+		attrs &= ~ATTR_UNBOOTABLE;
+		put_le64(pt + 48, attrs);
+		put_le64(bt + 48, attrs);
 	}
-	attrs |= ATTR_SUCCESSFUL;
-	attrs &= ~ATTR_UNBOOTABLE;
-	put_le64(pt + 48, attrs);
-	put_le64(bt + 48, attrs);
 	refresh_crcs(&primary);
 	refresh_crcs(&backup);
 
@@ -404,6 +428,13 @@ int main(int argc, char **argv)
 	vb = find_boot(&verify_backup, slot);
 	if (!vp || !vb || le64(vp + 48) != attrs || le64(vb + 48) != attrs)
 		goto out;
+	if (op == OP_SET_ACTIVE) {
+		vp = find_boot(&verify_primary, other);
+		vb = find_boot(&verify_backup, other);
+		if (!vp || !vb || le64(vp + 48) != other_attrs ||
+		    le64(vb + 48) != other_attrs)
+			goto out;
+	}
 	rc = 0;
 
 out:
@@ -416,6 +447,10 @@ out:
 	}
 	if (rc) {
 		fprintf(stderr, "liuqin-slot-success: refused or failed; GPT not accepted\n");
+	} else if (op == OP_SET_ACTIVE) {
+		printf("liuqin-slot-success: slot %c is active (priority 3, 7 retries); "
+		       "slot %c demoted; primary/backup GPT CRCs verified\n",
+		       slot_name[slot], slot_name[other]);
 	} else if (op == OP_MARK) {
 		printf("liuqin-slot-success: slot %c is successful; "
 		       "primary/backup GPT CRCs verified\n", slot_name[slot]);

@@ -4,9 +4,9 @@
 Two things are covered:
 
   * the cmdline slot parser, both copies of it -- the ``slot_from_cmdline``
-    function in ``initramfs/init`` and the one in
-    ``device/gnome-overlay/usr/local/sbin/liuqin-switch`` -- against a table
-    of accepted and rejected command lines;
+    function in ``initramfs/init`` and the inline copy in
+    ``device/gnome-overlay/usr/local/bin/liuqin-boot-android`` -- against a
+    table of accepted and rejected command lines;
 
   * ``device/boot/liuqin-mark-slot-successful`` against a synthetic image the
     size of the device's ``sde`` LUN, whose GPT carries ``boot_a``/``boot_b``
@@ -76,19 +76,11 @@ def gpt_entries(attr_a, attr_b):
     return bytes(entries)
 
 
-# Where the backup copy lives.  A generic GPT tool puts the backup entry array
-# right below the backup header (LastUsableLBA = disk_lbas - 6); the stock
-# Xiaomi ABL on liuqin leaves two spare sectors, measured on the device as
-# PartitionEntryLBA = 713721 = disk_lbas - 7 with LastUsableLBA = 713720.
-GENERIC_LAYOUT = dict(backup_entries=DISK_LBAS - 5, last_usable=DISK_LBAS - 6)
-XIAOMI_ABL_LAYOUT = dict(backup_entries=DISK_LBAS - 7, last_usable=DISK_LBAS - 8)
-
-
-def gpt_header(my_lba, alt_lba, entries_lba, entries, last_usable=DISK_LBAS - 6):
+def gpt_header(my_lba, alt_lba, entries_lba, entries):
     header = bytearray(HEADER_SIZE)
     header[0:8] = b"EFI PART"
     struct.pack_into("<IIII", header, 8, 0x00010000, HEADER_SIZE, 0, 0)
-    struct.pack_into("<QQQQ", header, 24, my_lba, alt_lba, 6, last_usable)
+    struct.pack_into("<QQQQ", header, 24, my_lba, alt_lba, 6, DISK_LBAS - 6)
     header[56:72] = bytes(range(0x40, 0x50))
     struct.pack_into("<QIII", header, 72, entries_lba, ENTRY_COUNT, ENTRY_SIZE,
                      zlib.crc32(entries))
@@ -96,12 +88,8 @@ def gpt_header(my_lba, alt_lba, entries_lba, entries, last_usable=DISK_LBAS - 6)
     return bytes(header).ljust(SECTOR, b"\0")
 
 
-def make_image(path, attr_a=0x0077, attr_b=0x007A, primary_entries=2,
-               backup_entries=DISK_LBAS - 5, last_usable=DISK_LBAS - 6,
-               backup_last_usable=None):
+def make_image(path, attr_a=0x0077, attr_b=0x007A):
     entries = gpt_entries(attr_a, attr_b)
-    if backup_last_usable is None:
-        backup_last_usable = last_usable
     with open(path, "wb") as image:
         image.truncate(DISK_BYTES)
         mbr = bytearray(SECTOR)
@@ -110,18 +98,12 @@ def make_image(path, attr_a=0x0077, attr_b=0x007A, primary_entries=2,
         mbr[510:512] = b"\x55\xaa"
         image.seek(0)
         image.write(mbr)
-        # Entries first, headers last: in the deliberately overlapping cases
-        # below the header must win, so the CRCs stay self-consistent and the
-        # only thing wrong with the table is where the array claims to live.
-        image.seek(primary_entries * SECTOR)
+        image.write(gpt_header(1, DISK_LBAS - 1, 2, entries))
         image.write(entries)
-        image.seek(backup_entries * SECTOR)
+        image.seek((DISK_LBAS - 5) * SECTOR)
         image.write(entries)
-        image.seek(1 * SECTOR)
-        image.write(gpt_header(1, DISK_LBAS - 1, primary_entries, entries, last_usable))
         image.seek((DISK_LBAS - 1) * SECTOR)
-        image.write(gpt_header(DISK_LBAS - 1, 1, backup_entries, entries,
-                               backup_last_usable))
+        image.write(gpt_header(DISK_LBAS - 1, 1, DISK_LBAS - 5, entries))
 
 
 def read_copy(path, header_lba):
@@ -156,20 +138,10 @@ def other_entries(path, header_lba):
             for i in range(ENTRY_COUNT) if i not in (13, 42)]
 
 
-def gpt_regions(path):
-    """Every sector a GPT copy can occupy in these tests: LBA 0-5 and the
-    last 16 LBAs."""
-    with open(path, "rb") as image:
-        head = image.read(6 * SECTOR)
-        image.seek((DISK_LBAS - 16) * SECTOR)
-        tail = image.read()
-    return head + tail
-
-
-def sectors_zero(path, first, last):
-    with open(path, "rb") as image:
-        image.seek(first * SECTOR)
-        return image.read((last - first + 1) * SECTOR) == bytes((last - first + 1) * SECTOR)
+def write_magic(path, magic=b"ANDROID!"):
+    with open(path, "r+b") as image:
+        image.seek(BOOT_A[0] * SECTOR)
+        image.write(magic)
 
 
 def run_tool(binary, image, *args):
@@ -213,9 +185,9 @@ def extract_function(path, name):
     raise SystemExit(f"slot-tool: {name}() is unterminated in {path}")
 
 
-def test_parser(shell, path, label):
-    print(f"{label} slot_from_cmdline")
-    body = extract_function(path, "slot_from_cmdline")
+def test_init_parser(shell):
+    print("initramfs/init slot_from_cmdline")
+    body = extract_function(PROJECT / "initramfs/init", "slot_from_cmdline")
     for cmdline, expected in CMDLINE_CASES:
         script = body + '\nif slot_from_cmdline "$1"; then printf "ok:%s\\n" "$slot_suffix"; else printf "no:%s\\n" "$slot_suffix"; fi\n'
         out = subprocess.run([*shell, "-c", script, "sh", cmdline],
@@ -224,13 +196,49 @@ def test_parser(shell, path, label):
         check(f"{cmdline!r} -> {want}", out == want, f"got {out!r}")
 
 
-def test_parser_copies_agree():
-    # The switcher only uses its copy to refuse a switch on the fallback slot,
-    # but the two must not drift apart silently.
-    init = extract_function(PROJECT / "initramfs/init", "slot_from_cmdline")
-    switch = extract_function(PROJECT / "device/gnome-overlay/usr/local/sbin/liuqin-switch",
-                              "slot_from_cmdline")
-    check("the initramfs and switcher parsers are the same text", init == switch)
+def test_boot_android_parser(shell, tmp):
+    print("liuqin-boot-android slot gate")
+    script = PROJECT / "device/gnome-overlay/usr/local/bin/liuqin-boot-android"
+    fake = tmp / "fakebin"
+    fake.mkdir(exist_ok=True)
+    (fake / "id").write_text("#!/bin/sh\nprintf '0\\n'\n")
+    (fake / "id").chmod(0o755)
+    mark = fake / "mark"
+    mark.write_text("#!/bin/sh\nprintf 'mark %s\\n' \"$*\"\n")
+    mark.chmod(0o755)
+    cmdline_file = tmp / "cmdline"
+
+    def invoke(cmdline, uid="0"):
+        cmdline_file.write_text(cmdline + "\n")
+        (fake / "id").write_text(f"#!/bin/sh\nprintf '{uid}\\n'\n")
+        (fake / "id").chmod(0o755)
+        env = dict(os.environ,
+                   LIUQIN_ID=str(fake / "id"), LIUQIN_MARK_SLOT=str(mark),
+                   LIUQIN_CMDLINE=str(cmdline_file), LIUQIN_BOOT_A=str(tmp / "absent"),
+                   LIUQIN_SYSTEMCTL="/bin/true", LIUQIN_DD="/bin/true")
+        return subprocess.run([*shell, str(script), "--dry-run"],
+                              capture_output=True, text=True, env=env)
+
+    run = invoke("androidboot.slot_suffix=_b", uid="1000")
+    check("non-root is refused", run.returncode == 1 and "must run as root" in run.stderr,
+          f"rc={run.returncode} {run.stderr!r}")
+    run = invoke("androidboot.slot_suffix=_a")
+    check("slot a is refused", run.returncode == 1 and "nothing to switch" in run.stderr,
+          f"rc={run.returncode} {run.stderr!r}")
+    run = invoke("console=ttyMSM0")
+    check("missing suffix is refused", run.returncode == 1 and "no usable" in run.stderr,
+          f"rc={run.returncode} {run.stderr!r}")
+    run = invoke("androidboot.slot_suffix=_c")
+    check("garbage suffix is refused", run.returncode == 1 and "no usable" in run.stderr,
+          f"rc={run.returncode} {run.stderr!r}")
+    run = invoke("androidboot.slot_suffix=_b")
+    check("slot b reaches the boot_a check",
+          run.returncode == 1 and "not a block device" in run.stderr,
+          f"rc={run.returncode} {run.stderr!r}")
+    run = invoke("androidboot.slot_suffix=_b slot_suffix=_a")
+    check("disagreeing suffixes are refused",
+          run.returncode == 1 and "no usable" in run.stderr,
+          f"rc={run.returncode} {run.stderr!r}")
 
 
 # --------------------------------------------------------------------------
@@ -243,20 +251,17 @@ def test_mark_tool(binary, tmp):
     # usage
     make_image(image)
     for args, why in (([], "no operation"), (["--mark"], "--mark without a slot"),
-                      (["--mark", "c"], "--mark c"), (["--check", "_c"], "--check _c")):
+                      (["--mark", "c"], "--mark c"), (["--set-active"], "--set-active alone"),
+                      (["--check", "_c"], "--check _c")):
         run = run_tool(binary, image, *args)
         check(f"usage: {why} exits 2", run.returncode == 2, f"rc={run.returncode}")
 
-    # Slot selection was retired: on this ABL it needs the type-GUID swap and
-    # the UFS boot LUN that only `fastboot --set-active` performs.  The old
-    # spellings must be plain usage errors that leave the GPT alone.
-    snapshot = gpt_regions(image)
-    for args in (["--set-active", "a"], ["--set-active", "b", "--i-know"],
-                 ["--mark", "a", "--i-know"]):
-        run = run_tool(binary, image, *args)
-        check(f"retired: {' '.join(args)} exits 2", run.returncode == 2,
-              f"rc={run.returncode}")
-    check("the retired spellings left the GPT alone", gpt_regions(image) == snapshot)
+    # --set-active demands the acknowledgement
+    run = run_tool(binary, image, "--set-active", "b")
+    check("--set-active without --i-know is refused",
+          run.returncode == 1 and "--i-know" in run.stderr, f"rc={run.returncode}")
+    check("refused --set-active left the GPT alone",
+          attrs(image, 1, 13) == 0x0077 and attrs(image, 1, 42) == 0x007A)
 
     # --check / --mark on the active slot
     make_image(image, attr_a=0x0077, attr_b=0x007A)
@@ -283,29 +288,56 @@ def test_mark_tool(binary, tmp):
     run = run_tool(binary, image, "--check", "a")
     check("--check a after marking passes", run.returncode == 0)
 
-    # the same cycle on slot B, as `fastboot --set-active=b` leaves it
-    # (0x3F on boot_b, 0x3A on boot_a)
-    make_image(image, attr_a=0x003A, attr_b=0x003F)
+    # --set-active a without the ANDROID! magic
+    make_image(image)
     before = other_entries(image, 1)
-    run = run_tool(binary, image, "--check", "b")
-    check("--check b before marking is refused", run.returncode == 1)
+    run = run_tool(binary, image, "--set-active", "a", "--i-know")
+    check("--set-active a without ANDROID! is refused",
+          run.returncode == 1 and "ANDROID!" in run.stderr, f"{run.stderr!r}")
+    check("the refused --set-active a changed nothing",
+          attrs(image, 1, 13) == 0x0077 and attrs(image, 1, 42) == 0x007A and
+          other_entries(image, 1) == before)
+
+    write_magic(image, b"ANDROIDX")
+    run = run_tool(binary, image, "--set-active", "a", "--i-know")
+    check("--set-active a with a near-miss magic is refused", run.returncode == 1)
+
+    # --set-active a with the magic
+    write_magic(image)
+    run = run_tool(binary, image, "--set-active", "a", "--i-know")
+    check("--set-active a with ANDROID! succeeds", run.returncode == 0, f"{run.stderr!r}")
+    check("slot A became 0x3F (priority 3, active, 7 retries)",
+          attrs(image, 1, 13) == 0x003F, f"{attrs(image, 1, 13):#06x}")
+    check("slot B became 0x3A (priority 2, inactive, 7 retries)",
+          attrs(image, 1, 42) == 0x003A, f"{attrs(image, 1, 42):#06x}")
+    check("--set-active mirrored into the backup GPT",
+          attrs(image, DISK_LBAS - 1, 13) == 0x003F and
+          attrs(image, DISK_LBAS - 1, 42) == 0x003A)
+    check("--set-active left both CRCs valid",
+          crcs_valid(image, 1) and crcs_valid(image, DISK_LBAS - 1))
+    check("--set-active left every other entry byte-identical",
+          other_entries(image, 1) == before and other_entries(image, DISK_LBAS - 1) == before)
+
+    # --set-active b needs no magic, and the marked-successful cycle follows
+    make_image(image)
+    run = run_tool(binary, image, "--set-active", "b", "--i-know")
+    check("--set-active b succeeds without any magic", run.returncode == 0, f"{run.stderr!r}")
+    check("slot B is active and slot A demoted",
+          attrs(image, 1, 42) == 0x003F and attrs(image, 1, 13) == 0x003A)
     run = run_tool(binary, image, "--mark", "b")
-    check("--mark b succeeds", run.returncode == 0, f"{run.stderr!r}")
+    check("--mark b after --set-active b succeeds", run.returncode == 0, f"{run.stderr!r}")
     check("slot B is now successful", attrs(image, 1, 42) == 0x007F,
           f"{attrs(image, 1, 42):#06x}")
-    check("--mark b did not touch slot A", attrs(image, 1, 13) == 0x003A)
-    check("--mark b mirrored into the backup GPT and kept both CRCs valid",
-          attrs(image, DISK_LBAS - 1, 42) == 0x007F and
-          crcs_valid(image, 1) and crcs_valid(image, DISK_LBAS - 1))
-    check("--mark b left every other entry byte-identical",
-          other_entries(image, 1) == before and other_entries(image, DISK_LBAS - 1) == before)
     run = run_tool(binary, image, "--check", "b")
     check("--check b passes", run.returncode == 0)
     run = run_tool(binary, image, "--check", "a")
-    check("--check a fails: slot A is not active", run.returncode == 1)
-    run = run_tool(binary, image, "--mark", "a")
-    check("--mark a refuses the inactive slot A", run.returncode == 1 and
-          attrs(image, 1, 13) == 0x003A)
+    check("--check a now fails: slot A is no longer active", run.returncode == 1)
+
+    # both slots active at once is not a table this tool understands
+    make_image(image, attr_a=0x0077, attr_b=0x007E)
+    write_magic(image)
+    run = run_tool(binary, image, "--set-active", "a", "--i-know")
+    check("--set-active refuses a table with two active slots", run.returncode == 1)
 
     # a corrupt primary CRC fails closed
     make_image(image)
@@ -335,85 +367,6 @@ def test_mark_tool(binary, tmp):
           f"rc={run.returncode}")
 
 
-def test_entry_locations(binary, tmp):
-    print("liuqin-mark-slot-successful: entry array location")
-    image = tmp / "sde-layout.img"
-    backup = DISK_LBAS - 1
-
-    for label, layout in (("Xiaomi ABL layout (backup entries at disk_lbas-7)",
-                           XIAOMI_ABL_LAYOUT),
-                          ("generic layout (backup entries at disk_lbas-5)",
-                           GENERIC_LAYOUT)):
-        entries_lba = layout["backup_entries"]
-        make_image(image, **layout)
-        before = other_entries(image, 1)
-        run = run_tool(binary, image, "--check", "a")
-        check(f"{label}: --check a passes", run.returncode == 0,
-              f"rc={run.returncode} {run.stderr!r}")
-
-        make_image(image, attr_a=0x0037, **layout)
-        run = run_tool(binary, image, "--mark", "a")
-        check(f"{label}: --mark a succeeds", run.returncode == 0, f"{run.stderr!r}")
-        check(f"{label}: --mark a updated both copies",
-              attrs(image, 1, 13) == 0x0077 and attrs(image, backup, 13) == 0x0077)
-        check(f"{label}: backup header still points at LBA {entries_lba}",
-              struct.unpack_from("<Q", read_copy(image, backup)[0], 72)[0] == entries_lba)
-        check(f"{label}: --mark a left both CRCs valid",
-              crcs_valid(image, 1) and crcs_valid(image, backup))
-        check(f"{label}: --mark a left every other entry byte-identical",
-              other_entries(image, 1) == before and other_entries(image, backup) == before)
-        check(f"{label}: nothing written between the backup array and header",
-              sectors_zero(image, entries_lba + 3, backup - 1))
-        run = run_tool(binary, image, "--check", "a")
-        check(f"{label}: --check a after marking passes", run.returncode == 0)
-
-    # Boundaries that are legal: the primary array ending exactly at
-    # FirstUsableLBA, the backup array starting right after LastUsableLBA and
-    # ending right before the backup header.
-    for label, kwargs in (
-            ("primary entries at LBA 3 (ends at FirstUsableLBA)",
-             dict(primary_entries=3)),
-            ("backup entries right after LastUsableLBA",
-             dict(backup_entries=DISK_LBAS - 9, last_usable=DISK_LBAS - 10)),
-            ("backup entries ending right before the backup header",
-             dict(backup_entries=DISK_LBAS - 4, last_usable=DISK_LBAS - 8))):
-        make_image(image, attr_a=0x0037, **kwargs)
-        run = run_tool(binary, image, "--mark", "a")
-        check(f"accepted: {label}", run.returncode == 0 and
-              attrs(image, 1, 13) == 0x0077 and attrs(image, backup, 13) == 0x0077 and
-              crcs_valid(image, 1) and crcs_valid(image, backup), f"{run.stderr!r}")
-
-    # Locations that overlap the usable area or a header, plus geometry the
-    # two headers disagree on.  Every one must be refused for --check and
-    # --mark, and leave every GPT sector untouched.  Slot A is already
-    # successful, so on an accepted table both calls below would succeed.
-    for label, kwargs in (
-            ("primary entries at LBA 4 (overlap FirstUsableLBA)",
-             dict(primary_entries=4)),
-            ("primary entries at LBA 6 (inside the usable area)",
-             dict(primary_entries=6)),
-            ("backup entries at LastUsableLBA",
-             dict(backup_entries=DISK_LBAS - 8, last_usable=DISK_LBAS - 8)),
-            ("backup entries at disk_lbas-7 below LastUsableLBA disk_lbas-6",
-             dict(backup_entries=DISK_LBAS - 7, last_usable=DISK_LBAS - 6)),
-            ("backup entries overlapping the backup header",
-             dict(backup_entries=DISK_LBAS - 3, last_usable=DISK_LBAS - 8)),
-            ("backup entries at the backup header LBA",
-             dict(backup_entries=DISK_LBAS - 1, last_usable=DISK_LBAS - 8)),
-            ("LastUsableLBA below the pinned boot_b range",
-             dict(backup_entries=DISK_LBAS - 7, last_usable=BOOT_B[1] - 1)),
-            ("primary/backup LastUsableLBA disagree",
-             dict(backup_entries=DISK_LBAS - 7, last_usable=DISK_LBAS - 6,
-                  backup_last_usable=DISK_LBAS - 8))):
-        make_image(image, **kwargs)
-        snapshot = gpt_regions(image)
-        results = [run_tool(binary, image, *args).returncode for args in
-                   (("--check", "a"), ("--mark", "a"))]
-        check(f"rejected: {label}",
-              results == [1, 1] and gpt_regions(image) == snapshot,
-              f"rc={results}")
-
-
 def main():
     # The initramfs runs under BusyBox ash and the device script under dash;
     # prefer BusyBox so the parser is exercised by its real interpreter.
@@ -428,12 +381,9 @@ def main():
         subprocess.run([compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                         str(PROJECT / "device/boot/liuqin-mark-slot-successful.c"),
                         "-o", str(binary)], check=True)
-        test_parser(shell, PROJECT / "initramfs/init", "initramfs/init")
-        test_parser(shell, PROJECT / "device/gnome-overlay/usr/local/sbin/liuqin-switch",
-                    "liuqin-switch")
-        test_parser_copies_agree()
+        test_init_parser(shell)
+        test_boot_android_parser(shell, tmp)
         test_mark_tool(str(binary), tmp)
-        test_entry_locations(str(binary), tmp)
     if FAILURES:
         print(f"liuqin slot-tool tests: FAIL ({len(FAILURES)})")
         return 1
