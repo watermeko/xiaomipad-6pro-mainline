@@ -209,6 +209,7 @@ enrol_status_line (FpDevice *device, const gchar *line)
     self->enrol_existing = TRUE;
   else if (!self->cancelled &&
            sscanf (line, "enrol_progress_status=%d remaining=%u%c", &status, &remaining, &extra) == 2) {
+    g_message ("OEM enroll sample status=%d remaining=%u", status, remaining);
     /* Positive OEM BIO_ENROL status means sampling continues. Zero is the
      * final sample and is only accepted through the final database result. */
     if (status < 0 || remaining >= 40) {
@@ -232,13 +233,18 @@ enrol_status_line (FpDevice *device, const gchar *line)
      * completed stage even when the OEM remaining count drops by several. */
     while (!self->cancelled && self->enrol_completed < completed)
       fpi_device_enroll_progress (device, ++self->enrol_completed, NULL, NULL);
-  } else if (!self->cancelled && g_str_has_prefix (line, "capture_rejected="))
+  } else if (!self->cancelled && g_str_has_prefix (line, "capture_rejected=")) {
+    if (sscanf (line, "capture_rejected=%d", &status) == 1)
+      g_message ("OEM enroll capture_rejected=%d", status);
     enrol_retry (device, FP_DEVICE_RETRY_GENERAL);
-  else if (!self->cancelled && g_str_has_prefix (line, "READY lift finger")) {
+  } else if (!self->cancelled && g_str_has_prefix (line, "READY lift finger")) {
+    g_message ("OEM enroll phase=lift-ready");
     fpi_device_report_finger_status (device, FP_FINGER_STATUS_PRESENT);
-    enrol_retry (device, FP_DEVICE_RETRY_REMOVE_FINGER);
-  } else if (!self->cancelled && g_str_has_prefix (line, "READY enrol attempt="))
+  } else if (!self->cancelled && g_str_has_prefix (line, "READY enrol attempt=")) {
+    g_message ("OEM enroll phase=down-setup");
     fpi_device_report_finger_status (device, FP_FINGER_STATUS_NEEDED);
+  } else if (!self->cancelled && g_str_has_prefix (line, "READY finger_irq_armed=down"))
+    g_message ("OEM enroll phase=down-ready");
 }
 
 static void enrol_read_line (GObject *source, GAsyncResult *result, gpointer user_data);
@@ -424,11 +430,19 @@ verify_finished (GObject *source, GAsyncResult *result, gpointer user_data)
   gboolean missed = output && strstr (output, "match_result=not_matched desktop_authentication=disabled\n");
   gboolean cancelled = self->cancelled || fpi_device_action_is_cancelled (device);
   gboolean valid_result = cleaned && ((status == 0 && matched) || (status == 3 && missed));
-  /* The OEM client only emits these inconclusive results after an ordinary
-   * identify response and successful DB export. They never authorize a match.
-   * Finish this cleaned attempt and let fprintd request a fresh press. */
-  gboolean retry_scan = cleaned && status == 1 && !matched && !missed && output &&
-    (strstr (output, "match_result=inconclusive identify_app_status=4\n") ||
+  /* CAPTURE's WAIT_TIME is an ordinary unsuccessful sample, before identify.
+   * The client emits it on stderr. Keep transport/unknown statuses fatal.
+   * Existing inconclusive identify results follow successful DB export.
+   * None authorize a match; let fprintd request a fresh press after cleanup. */
+  /* Additional stderr diagnostics can describe a later TEE/cleanup failure. */
+  gboolean capture_wait = g_strcmp0 (diagnostic,
+    "match_incomplete=capture_rejected app_status=1\n") == 0;
+  gboolean runtime_stopped = diagnostic &&
+    (strstr (diagnostic, "oem_runtime_timed_out=1\n") ||
+     strstr (diagnostic, "oem_runtime_cancelled=1\n"));
+  gboolean retry_scan = cleaned && status == 1 && !runtime_stopped && !matched && !missed && output &&
+    (capture_wait ||
+     strstr (output, "match_result=inconclusive identify_app_status=4\n") ||
      strstr (output, "match_result=inconclusive identify_app_status=12\n"));
   if (!cancelled && valid_result && status == 0 &&
       !accept_updated_database (self, output && strstr (output, "database_update_required=1\n"), &error))
