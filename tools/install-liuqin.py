@@ -218,6 +218,12 @@ def parse_arguments(argv=None):
     parser.add_argument('--allow-unverified', action='store_true', help='Explicitly test an offline-only bundle')
     parser.add_argument('--enable-rescue', action='store_true',
                         help='Enable unauthenticated root rescue access after installation (trusted USB only)')
+    parser.add_argument('--resume-split', action='store_true',
+                        help='Continue a dual install whose partition table is already the split '
+                             'layout. Skips rewriting the table and formatting nothing until the '
+                             'root step. Refuses unless the existing userdata and linux_root sizes '
+                             'match --android-size and --root-size. linux_home is created here, so '
+                             'it is formatted; this is not --keep-home.')
     return parser, parser.parse_args(argv)
 
 
@@ -239,6 +245,9 @@ def reference_plan(parser, args):
 def validate_arguments(parser, args, preview=False):
     """Check the argument combinations.  ``preview`` covers the offline --check
     path, where no device and no stock ROM are involved."""
+    if args.resume_split and (args.keep_home or args.restore_partition_table or args.layout != 'dual'):
+        parser.error('--resume-split continues a dual install on an existing split table;'
+                     ' it cannot be combined with --keep-home, --restore-partition-table or another layout')
     if args.no_backup and (args.backup or not args.keep_home or args.restore_partition_table):
         parser.error('--no-backup requires --keep-home and cannot be combined with --backup or restore')
     if args.keep_home and (args.android_size or args.root_size):
@@ -384,7 +393,10 @@ def main(argv=None):
         parser.error('--serial, --backup (or --no-backup), --erase-userdata and --layout are required')
     if restore is None:
         if not args.no_backup:
-            if args.backup.exists():
+            if args.resume_split:
+                if not args.backup.is_dir():
+                    parser.error('--resume-split requires the backup directory from the interrupted install')
+            elif args.backup.exists():
                 parser.error('--backup must be a new directory')
             args.backup = args.backup.resolve()
             if args.backup == bundle or bundle in args.backup.parents:
@@ -538,6 +550,23 @@ def main(argv=None):
         saved = None
         if args.no_backup:
             print('Partition backups skipped by explicit --no-backup request.', flush=True)
+        elif args.resume_split:
+            # The interrupted install already saved boot_a, boot_b, persist and
+            # the stock GPT.  Re-reading them would replace that copy; reuse it.
+            if not (args.backup / 'gpt/manifest.json').is_file():
+                raise RuntimeError('--resume-split backup has no saved partition table')
+            sums = (args.backup / 'SHA256SUMS').read_text() if (args.backup / 'SHA256SUMS').is_file() else ''
+            for name in ('boot_a', 'boot_b', 'persist'):
+                path = args.backup / (name + '.img')
+                if not path.is_file():
+                    raise RuntimeError('--resume-split backup is missing ' + name + '.img')
+                digest = sha(path)
+                marker = digest + '  ' + path.name
+                if marker not in sums.splitlines():
+                    raise RuntimeError('--resume-split backup hash is missing for ' + path.name)
+                backups[path.name] = digest
+            saved = args.backup / 'gpt'
+            print('Reusing the partition backups in ' + str(args.backup), flush=True)
         else:
             args.backup.mkdir(mode=0o700, parents=True)
             for name in ('boot_a', 'boot_b', 'persist'):
@@ -557,12 +586,19 @@ def main(argv=None):
                 'the tablet still carries the factory partition table, so there is no linux_home'
                 ' to keep; install without --keep-home —— 设备仍是出厂分区表，没有可保留的 linux_home')
         if state == 'split':
-            if not args.keep_home:
+            if args.resume_split:
+                check_resume_split(disk, args)
+                print('Continuing on the existing split layout. The partition table is left as it'
+                      ' is; linux_root and linux_home are formatted by the root step.')
+            elif not args.keep_home:
                 raise RuntimeError(
                     'the tablet already carries a split layout; pass --keep-home to reinstall the'
                     ' system and keep linux_home. Changing the split requires restoring the stock'
                     ' partition table and installing again —— 已有分区布局不支持原地调整尺寸')
-            print('Reinstalling on the existing split layout; linux_home is left untouched.')
+            else:
+                print('Reinstalling on the existing split layout; linux_home is left untouched.')
+        elif args.resume_split:
+            raise RuntimeError('--resume-split found no split layout; nothing was written')
         else:
             layout.check_stock_device(disk)
             region = disk.usable_end - disk.by_name(layout.USERDATA_NAME).start
@@ -579,8 +615,8 @@ def main(argv=None):
                 name = entry['partition']
                 if name in ANDROID_FIRMWARE_PARTITIONS:
                     if args.no_backup:
-                        firmware_bytes = int(remote('/bin/busybox blockdev --getsize64 ' +
-                                                    shlex.quote('/dev/disk/by-partlabel/' + name)).decode().strip())
+                        firmware_bytes = int(remote('node="$(' + partition_node(name) +
+                                                    ')" && /bin/busybox blockdev --getsize64 "$node"').decode().strip())
                     else:
                         backups[name + '.img'] = backup_partition(remote, args.backup, name)
                         firmware_bytes = (args.backup / (name + '.img')).stat().st_size
@@ -618,6 +654,33 @@ def main(argv=None):
             scratch.cleanup()
 
 
+def check_resume_split(disk, args):
+    """Refuse to continue unless the table already is the requested dual split.
+
+    The sizes are checked against the same resolver a fresh install would use,
+    so a resume cannot silently accept a different userdata or root.
+    """
+    region = disk.usable_end - disk.by_name(layout.USERDATA_NAME).start
+    android, root = layout.resolve_sizes(args.layout, args.android_size, args.root_size, region)
+    userdata = disk.by_name(layout.USERDATA_NAME)
+    linux_root = disk.by_name(layout.ROOT_NAME)
+    linux_home = disk.by_name(layout.HOME_NAME)
+    if userdata is None or linux_root is None or linux_home is None:
+        raise RuntimeError('--resume-split requires userdata, linux_root and linux_home')
+    # plan_layout() rounds each boundary up to 4 MiB, so the userdata that was
+    # written can be a few mebibytes larger than the requested size.  Accept
+    # that rounded size, and nothing else.
+    aligned_android = layout.align_up(userdata.start + android) - userdata.start
+    aligned_root = layout.align_up(linux_root.start + root) - linux_root.start
+    if userdata.size != aligned_android or linux_root.size != aligned_root:
+        raise RuntimeError(
+            '--resume-split sizes do not match the table '
+            f'(userdata {userdata.size}, linux_root {linux_root.size}; '
+            f'requested {aligned_android} and {aligned_root}); nothing was written')
+    if linux_home.start != linux_root.end or linux_root.start != userdata.end:
+        raise RuntimeError('--resume-split partitions are not contiguous; nothing was written')
+
+
 def boot_slots(mode):
     """The slots whose boot partition receives the project boot image, the
     booting slot first."""
@@ -626,15 +689,31 @@ def boot_slots(mode):
     return (LINUX_ONLY_UBUNTU_SLOT,)
 
 
+def partition_node(name):
+    """Shell snippet that prints the block node for a PARTNAME.
+
+    The RAM image builds /dev/disk/by-partlabel once, and only for the names
+    the installer needs before it edits the table.  Firmware partitions live
+    on another LUN and never get a link, and linux_root/linux_home appear
+    only after the table is written, so every later read goes through the
+    same sysfs PARTNAME walk install-layout.sh uses.
+    """
+    quoted = shlex.quote(name)
+    return ('found=; for info in /sys/class/block/sd*/uevent; do '
+            '/bin/busybox grep -qx PARTNAME=' + quoted + ' "$info" || continue; '
+            '[ -z "$found" ] || exit 1; node=${info%/uevent}; found=/dev/${node##*/}; '
+            'done; test -n "$found" && test -b "$found" && printf %s "$found"')
+
+
 def backup_partition(remote, directory, name):
     """Save and verify the entire original partition before a possible write."""
     print('Backing up and verifying ' + name + '...', flush=True)
-    device = '/dev/disk/by-partlabel/' + name
-    content = remote('test -b ' + device + ' && /bin/busybox base64 ' + device, 600)
+    device = '"$(' + partition_node(name) + ')"'
+    content = remote('node=' + device + ' && test -b "$node" && /bin/busybox base64 "$node"', 600)
     target = directory / (name + '.img')
     target.write_bytes(base64.b64decode(content, validate=False))
     target.chmod(0o600)
-    expected = remote('/bin/busybox sha256sum ' + device, 120).decode().split()[0]
+    expected = remote('node=' + device + ' && /bin/busybox sha256sum "$node"', 120).decode().split()[0]
     if sha(target) != expected:
         raise RuntimeError('Backup verification failed: ' + name)
     return expected

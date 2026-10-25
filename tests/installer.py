@@ -288,11 +288,12 @@ for name, partition in firmware_images.items():
 
         def read_partition(command, timeout=60):
             commands.append(command)
-            assert '/dev/disk/by-partlabel/' + partition in command
+            assert 'PARTNAME=' + partition in command
+            assert '/dev/disk/by-partlabel/' not in command
             if 'base64' in command:
                 return base64.b64encode(original) + b'\r\n'
             assert 'sha256sum' in command
-            return (expected_sha + '  /dev/disk/by-partlabel/' + partition + '\n').encode()
+            return (expected_sha + '  /dev/sde8\n').encode()
 
         assert installer.backup_partition(read_partition, saved, partition) == expected_sha
         backup = saved / (partition + '.img')
