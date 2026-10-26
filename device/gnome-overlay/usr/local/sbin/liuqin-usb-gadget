@@ -1,0 +1,75 @@
+#!/bin/sh
+# Create the liuqin USB gadget: NCM network plus ADB.
+#
+# The boot image normally builds this before Linux starts, but the kernel
+# rejects new links into a gadget that was edited after it was bound, so the
+# only reliable way to add ADB is to rebuild the gadget from scratch.  That
+# costs the USB link for about a second, and usb0's address is restored below.
+#
+# The parameters mirror the initramfs: same IDs, same product string, same
+# fixed MAC pair, so the host keeps the same interface name and address.
+set -eu
+G=/sys/kernel/config/usb_gadget/liuqin
+UDC_NAME=a600000.usb
+[ -e /sys/class/udc/$UDC_NAME ] || { echo "no $UDC_NAME" >&2; exit 1; }
+
+systemctl stop liuqin-adbd.service 2>/dev/null || true
+pkill -x adbd 2>/dev/null || true
+sleep 0.5
+umount /dev/usb-ffs/adb 2>/dev/null || true
+
+# Detach and remove the existing gadget, if any.  A gadget that was bound
+# while it was edited refuses further links, so it cannot be repaired in place.
+if [ -d "$G" ]; then
+	printf '' >"$G/UDC" 2>/dev/null || true
+	for f in "$G"/configs/*/*; do [ -L "$f" ] && rm -f "$f"; done
+	for c in "$G"/configs/*; do
+		rmdir "$c"/strings/0x409 2>/dev/null || true
+		rmdir "$c"/strings 2>/dev/null || true
+		rmdir "$c" 2>/dev/null || true
+	done
+	for f in "$G"/functions/*; do rmdir "$f" 2>/dev/null || true; done
+	rmdir "$G"/strings/0x409 2>/dev/null || true
+	rmdir "$G"/strings 2>/dev/null || true
+	rmdir "$G" 2>/dev/null || true
+fi
+
+mkdir -p "$G"
+cd "$G"
+echo 0x1d6b > idVendor
+echo 0x1040 > idProduct
+echo 0x0100 > bcdDevice
+echo 0x0200 > bcdUSB
+mkdir -p strings/0x409
+echo 000000000001 > strings/0x409/serialnumber
+echo "Xiaomi Pad 6 Pro mainline" > strings/0x409/manufacturer
+echo "liuqin first-boot diagnostics" > strings/0x409/product
+
+mkdir -p configs/c.1
+mkdir -p configs/c.1/strings/0x409
+echo "USB network diagnostics" > configs/c.1/strings/0x409/configuration
+echo 500 > configs/c.1/MaxPower
+
+mkdir -p functions/ncm.usb0
+echo 02:00:00:00:07:02 > functions/ncm.usb0/dev_addr
+echo 02:00:00:00:07:01 > functions/ncm.usb0/host_addr
+ln -s functions/ncm.usb0 configs/c.1/ncm.usb0
+
+mkdir -p functions/ffs.adb
+ln -s functions/ffs.adb configs/c.1/ffs.adb
+
+mkdir -p /dev/usb-ffs/adb
+mount -t functionfs adb /dev/usb-ffs/adb
+
+systemctl start liuqin-adbd.service
+i=0
+while [ ! -e /dev/usb-ffs/adb/ep1 ]; do
+	i=$((i + 1))
+	[ "$i" -lt 100 ] || { echo 'adbd did not publish its endpoints' >&2; exit 1; }
+	sleep 0.2
+done
+
+echo "$UDC_NAME" > "$G/UDC"
+sleep 0.5
+ip link set usb0 up || true
+ip address replace 192.168.7.2/24 dev usb0 || true

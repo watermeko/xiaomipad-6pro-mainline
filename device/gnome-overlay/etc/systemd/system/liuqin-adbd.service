@@ -1,0 +1,15 @@
+[Unit]
+Description=liuqin adbd on the USB FunctionFS gadget
+# adbd opens the FunctionFS endpoint and publishes its descriptors; the gadget
+# is built around it by liuqin-usb-gadget.service.
+After=local-fs.target
+ConditionPathExists=/dev/usb-ffs/adb
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/adbd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -240,12 +240,6 @@ PY
 		"$power_keyd_source" -o "$root/usr/local/libexec/liuqin-power-keyd"
 	chmod 0755 "$root/usr/local/libexec/liuqin-power-keyd"
 	LC_ALL=C SOURCE_DATE_EPOCH=0 "$power_key_cc" \
-		-std=c11 -O2 -pipe -static -Wall -Wextra -Werror \
-		-ffile-prefix-map="$project_root"=. \
-		"$project_root/device/boot/liuqin-boot-menu-drm.c" \
-		-o "$root/usr/local/libexec/liuqin-boot-menu-drm"
-	chmod 0755 "$root/usr/local/libexec/liuqin-boot-menu-drm"
-	LC_ALL=C SOURCE_DATE_EPOCH=0 "$power_key_cc" \
 		-std=c11 -O2 -pipe -static -Wall -Wextra -Werror -Wformat=2 \
 		-fstack-protector-strong -D_FORTIFY_SOURCE=3 \
 		-ffile-prefix-map="$project_root"=. -ffile-prefix-map="$root"=/build/liuqin-device-support \

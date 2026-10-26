@@ -1,0 +1,16 @@
+[Unit]
+Description=liuqin USB gadget: NCM network and ADB
+Before=network-pre.target
+Wants=liuqin-adbd.service
+After=local-fs.target
+# The gadget needs the UDC and configfs; without them there is nothing to build.
+ConditionPathExists=/sys/class/udc/a600000.usb
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/liuqin-usb-gadget
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
