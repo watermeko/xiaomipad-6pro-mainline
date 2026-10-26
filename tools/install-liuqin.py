@@ -224,6 +224,11 @@ def parse_arguments(argv=None):
                              'root step. Refuses unless the existing userdata and linux_root sizes '
                              'match --android-size and --root-size. linux_home is created here, so '
                              'it is formatted; this is not --keep-home.')
+    parser.add_argument('--android-only', action='store_true',
+                        help='On an existing dual split, replace only the Android firmware and '
+                             'the Android boot image in the switch store. The partition table, '
+                             'linux_root and linux_home are left as they are. boot_a and boot_b '
+                             'keep the Ubuntu image. Requires --rom-dir, --keep-home and --no-backup.')
     return parser, parser.parse_args(argv)
 
 
@@ -245,6 +250,11 @@ def reference_plan(parser, args):
 def validate_arguments(parser, args, preview=False):
     """Check the argument combinations.  ``preview`` covers the offline --check
     path, where no device and no stock ROM are involved."""
+    if args.android_only and (args.resume_split or args.restore_partition_table or args.layout != 'dual'
+                              or not args.keep_home or not args.no_backup or args.android_size or args.root_size):
+        parser.error('--android-only replaces Android firmware on an existing dual split;'
+                     ' it requires --layout dual --keep-home --no-backup and cannot change sizes,'
+                     ' resume or restore a partition table')
     if args.resume_split and (args.keep_home or args.restore_partition_table or args.layout != 'dual'):
         parser.error('--resume-split continues a dual install on an existing split table;'
                      ' it cannot be combined with --keep-home, --restore-partition-table or another layout')
@@ -586,7 +596,16 @@ def main(argv=None):
                 'the tablet still carries the factory partition table, so there is no linux_home'
                 ' to keep; install without --keep-home —— 设备仍是出厂分区表，没有可保留的 linux_home')
         if state == 'split':
-            if args.resume_split:
+            if args.android_only:
+                print('Replacing Android firmware on the existing split layout. '
+                      'The partition table, linux_root and linux_home are not touched.')
+                # A new Android release cannot reuse the previous encryption
+                # keys. Clearing the heads makes the first boot format userdata
+                # and metadata; it does not touch linux_root or linux_home.
+                print('Wiping Android userdata and encryption metadata...', flush=True)
+                device_layout('wipe-head', layout.USERDATA_NAME, str(layout.WIPE_BYTES), timeout=300)
+                device_layout('wipe-head', layout.METADATA_NAME, str(layout.WIPE_BYTES), timeout=300)
+            elif args.resume_split:
                 check_resume_split(disk, args)
                 print('Continuing on the existing split layout. The partition table is left as it'
                       ' is; linux_root and linux_home are formatted by the root step.')
@@ -630,10 +649,17 @@ def main(argv=None):
             if not args.no_backup:
                 (args.backup / 'SHA256SUMS').write_text(''.join(f'{h}  {n}\n' for n, h in backups.items()))
         base = f'http://{args.host_address}:{server.server_port}'
-        install = install_root_command(boot_id, base, bundle, manifest, args, rom_images)
-        print('Installing Ubuntu into ' + layout.ROOT_NAME + '.', flush=True)
+        if args.android_only:
+            install = stage_android_replace(remote, base, rom_images)
+            print('Replacing the Android boot image in the switch store.', flush=True)
+        else:
+            install = install_root_command(boot_id, base, bundle, manifest, args, rom_images)
+            print('Installing Ubuntu into ' + layout.ROOT_NAME + '.', flush=True)
         result = remote(shlex.join(install), 3600)
-        if b'liuqin-install: ROOT_INSTALLED' not in result:
+        if args.android_only:
+            if b'liuqin-install: ANDROID_BOOT_REPLACED' not in result:
+                raise RuntimeError('Device did not confirm the Android boot replacement')
+        elif b'liuqin-install: ROOT_INSTALLED' not in result:
             raise RuntimeError('Device did not confirm root installation')
         remote("(sleep 2; /usr/sbin/liuqin-reboot bootloader) >/dev/null 2>&1 &")
         deadline = time.monotonic() + 90
@@ -644,7 +670,8 @@ def main(argv=None):
             time.sleep(2)
         else:
             raise RuntimeError('Return to Fastboot not observed; boot partition was not flashed')
-        finish_in_fastboot(fastboot, args.layout, flashes, *padded_boot, boot_bytes)
+        finish_in_fastboot(fastboot, args.layout, flashes, *padded_boot, boot_bytes,
+                           android_only=args.android_only)
         print('Installation commands completed. First-boot verification is still required.')
     finally:
         if server:
@@ -719,7 +746,50 @@ def backup_partition(remote, directory, name):
     return expected
 
 
-def finish_in_fastboot(fastboot, mode, flashes, padded_image, padded_sha256, partition_bytes):
+ANDROID_REPLACE_SCRIPT = """#!/bin/busybox sh
+set -eu
+BB=/bin/busybox
+root=
+for info in /sys/class/block/sd*/uevent; do
+	$BB grep -qx PARTNAME=linux_root "$info" || continue
+	node=${info%/uevent}
+	root=/dev/${node##*/}
+	break
+done
+test -b "$root"
+mkdir -p /mnt/liuqin-root
+$BB mount -o ro "$root" /mnt/liuqin-root
+store=/mnt/liuqin-root/var/lib/liuqin/switch
+test -f "$store/ubuntu/boot.img"
+test -f "$store/android/boot.img"
+$BB mount -o remount,rw /mnt/liuqin-root
+$BB wget -O "$store/android/boot.img.partial" "$1"
+printf '%s  %s\\n' "$2" "$store/android/boot.img.partial" | $BB sha256sum -c -
+$BB mv "$store/android/boot.img.partial" "$store/android/boot.img"
+printf '%s  boot.img\\n' "$2" > "$store/android/SHA256SUMS"
+$BB sync
+$BB umount /mnt/liuqin-root
+echo liuqin-install: ANDROID_BOOT_REPLACED
+"""
+
+
+def stage_android_replace(remote, base_url, rom_images):
+    """Upload the Android-boot replacement script, then return its command.
+
+    The script is too long for one RAM shell line, so it goes over as base64
+    chunks. It only rewrites store/android on linux_root.
+    """
+    android = rom_images[ANDROID_BOOT_IMAGE]
+    stage_blob(remote, 'android-replace.sh', ANDROID_REPLACE_SCRIPT.encode())
+    remote('/bin/busybox base64 -d ' + LAYOUT_WORK + '/liuqin-gpt-android-replace.sh.b64 > '
+           + LAYOUT_WORK + '/replace-android.sh && /bin/busybox chmod 755 '
+           + LAYOUT_WORK + '/replace-android.sh')
+    return [LAYOUT_WORK + '/replace-android.sh',
+            base_url + '/' + ANDROID_BOOT_URL, android['sha256']]
+
+
+def finish_in_fastboot(fastboot, mode, flashes, padded_image, padded_sha256, partition_bytes,
+                       android_only=False):
     """The fastboot tail of an installation, after the root is in place.
 
     Stock images go to their _a partitions first, then the project boot image
@@ -739,13 +809,20 @@ def finish_in_fastboot(fastboot, mode, flashes, padded_image, padded_sha256, par
     for name, entry in flashes:
         source = 'supplied' if entry.get('override') else 'stock'
         print(f'Writing the {source} {name} to {entry["partition"]}...', flush=True)
-        fastboot('flash', entry['partition'], str(entry['path']))
-    slots = boot_slots(mode)
-    for slot in slots:
-        role = 'fallback copy of the ' if slot != slots[0] else ''
-        print(f'Writing the {role}project boot image to boot_{slot} (whole partition)...', flush=True)
-        fastboot('flash', 'boot_' + slot, str(padded_image))
-    fastboot('--set-active=' + slots[0])
+        # The project boot image is not signed for the stock vbmeta, so
+        # verification has to stay off or slot A returns to Fastboot.
+        if entry['partition'].startswith('vbmeta'):
+            fastboot('--disable-verity', '--disable-verification',
+                     'flash', entry['partition'], str(entry['path']))
+        else:
+            fastboot('flash', entry['partition'], str(entry['path']))
+    if not android_only:
+        slots = boot_slots(mode)
+        for slot in slots:
+            role = 'fallback copy of the ' if slot != slots[0] else ''
+            print(f'Writing the {role}project boot image to boot_{slot} (whole partition)...', flush=True)
+            fastboot('flash', 'boot_' + slot, str(padded_image))
+        fastboot('--set-active=' + slots[0])
     fastboot('reboot')
 
 

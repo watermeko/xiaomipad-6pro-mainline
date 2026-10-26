@@ -1,0 +1,17 @@
+[Unit]
+Description=liuqin switch boot_a to HyperOS after the boot menu chose it
+# Triggered only by liuqin-boot-menu.service failing with exit 10.  Every other
+# failure of the menu is ignored: an unreadable display or a missing store must
+# not change which system boots.
+DefaultDependencies=no
+After=local-fs.target
+RequiresMountsFor=/var/lib/liuqin
+ConditionPathExists=/var/lib/liuqin/switch/android/boot.img
+
+[Service]
+Type=oneshot
+# The menu leaves a marker only for HyperOS; any other failure of the menu has
+# no marker and skips this unit, so boot_a stays as it is.
+ExecCondition=/usr/local/libexec/liuqin-boot-menu-chose-hyperos
+ExecStart=/usr/local/sbin/liuqin-switch to-android
+TimeoutStartSec=120

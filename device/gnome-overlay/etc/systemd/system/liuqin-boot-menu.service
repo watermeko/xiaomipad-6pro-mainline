@@ -1,0 +1,23 @@
+[Unit]
+Description=liuqin dual-boot menu before the display manager
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+RequiresMountsFor=/usr/local/libexec /var/lib/liuqin
+Before=display-manager.service
+ConditionPathExists=/dev/dri/card0
+ConditionPathExists=/var/lib/liuqin/switch/android/boot.img
+# Exit 10 means HyperOS was chosen; the menu also leaves /run/liuqin-boot-menu/hyperos.
+# than ExecStopPost: the handler needs the unit to have a failure result anyway,
+# and this keeps the trigger independent of how ExecStopPost is scheduled.
+OnFailure=liuqin-boot-menu-hyperos.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/liuqin-boot-menu-drm
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=30
+
+[Install]
+WantedBy=basic.target
