@@ -61,6 +61,27 @@ MIN_HOME = 8 * GIB
 MODES = ('linux-only', 'dual')
 DEFAULT_SIZES = {'dual': ('96G', '32G'), 'linux-only': ('0', '32G')}
 
+# Partitions removed by --reclaim-android, in table order, so that Ubuntu can
+# start further back than userdata and take their space.
+#
+# The list stops at super on purpose.  Everything from mtdblk through rescue --
+# mtdblk, crash_history, minidump, rawdump, cust -- sits before super and is
+# left alone: cust carries Xiaomi's factory customisation and rawdump/minidump
+# are the diagnostic stores, and none of them is documented well enough to
+# delete blind.  They are also only ~1.5 GiB together, while super alone is
+# 8.5 GiB, so the conservative list already takes the bulk of what is worth
+# reclaiming.  Widening it later means adding names here and nowhere else.
+RECLAIMED_NAMES = (
+    'super',
+    'vbmeta_system_a',
+    'vbmeta_system_b',
+    'bk010',
+    'mem',
+    'mbnconfig',
+    'rescue',
+    USERDATA_NAME,
+)
+
 # Bytes zeroed at the head of userdata and metadata so that Android reformats
 # them on first boot instead of finding stale FBE keys, and so that no stale
 # LIUQIN_ROOT ext4 superblock survives where the old whole-userdata root was.
@@ -343,14 +364,48 @@ def _feasible(region, label, minimum, others):
             f'on this {human(region)} region')
 
 
-def plan_layout(disk, mode, android, root, keep_home=False):
+def reclaim_region(disk):
+    """Byte range taken by --reclaim-android, and the entries that fill it.
+
+    Returns (start, entries).  Every name in RECLAIMED_NAMES must exist and be
+    contiguous with the next one: a gap would mean the table is not the factory
+    layout this list was written against, and the caller must stop rather than
+    cut a hole through a partition it did not intend to remove.
+    """
+    found = []
+    for name in RECLAIMED_NAMES:
+        part = disk.by_name(name)
+        if part is None:
+            raise LayoutError('--reclaim-android needs the factory ' + name +
+                              ' partition, and it is not there')
+        found.append(part)
+    found.sort(key=lambda item: item.first_sector)
+    for before, after in zip(found, found[1:]):
+        if before.end != after.start:
+            raise LayoutError(
+                '--reclaim-android found a gap between ' + before.name + ' and ' +
+                after.name + '; this table is not the factory layout, nothing was written')
+    entries = [Entry(part.number, part.name, part.start, part.end, 'delete',
+                     'delete (reclaimed for Ubuntu by --reclaim-android)')
+               for part in found]
+    return found[0].start, entries
+
+
+def plan_layout(disk, mode, android, root, keep_home=False, reclaim=False):
     """Compute the tail layout.  ``android`` and ``root`` are byte counts."""
     if mode not in MODES:
         raise LayoutError('unknown layout mode: ' + str(mode))
+    if reclaim and mode != 'linux-only':
+        raise LayoutError('--reclaim-android only applies to --layout linux-only;'
+                          ' the dual layout needs userdata for Android')
     userdata = disk.by_name(USERDATA_NAME)
     if userdata is None:
         raise LayoutError('the partition table has no userdata partition')
-    region_start = userdata.start
+    reclaimed = []
+    if reclaim:
+        region_start, reclaimed = reclaim_region(disk)
+    else:
+        region_start = userdata.start
     region_end = disk.usable_end
     region = region_end - region_start
     if mode == 'dual' and android == 0:
@@ -363,9 +418,13 @@ def plan_layout(disk, mode, android, root, keep_home=False):
     if root < MIN_ROOT:
         raise LayoutError('--root-size ' + human(root) + ' is too small: '
                           + _feasible(region, 'linux_root', MIN_ROOT, MIN_HOME + android))
-    entries = []
+    entries = list(reclaimed)
     cursor = region_start
-    if android:
+    if reclaim:
+        # userdata is the last reclaimed entry and already runs to usable_end,
+        # so the whole tail is spoken for; adding it again would duplicate it.
+        cursor = region_start
+    elif android:
         end = align_up(cursor + android)
         entries.append(Entry(userdata.number, USERDATA_NAME, cursor, end, 'shrink',
                              f'shrink from {human(userdata.size)} '
@@ -407,8 +466,14 @@ def sgdisk_arguments(plan, device, userdata_info):
     # Explicit absolute sectors only: the engine has already aligned every
     # boundary, and sgdisk must not nudge them to its own idea of alignment.
     arguments = ['--set-alignment=1']
+    for item in plan.entries:
+        if item.action == 'delete':
+            arguments.append(f'--delete={item.number}')
     userdata = plan.entry(USERDATA_NAME)
-    arguments.append(f'--delete={userdata.number}')
+    if userdata.action == 'shrink':
+        # A shrink is a delete followed by a re-create at new bounds; sgdisk
+        # cannot resize in place through --new alone.
+        arguments.append(f'--delete={userdata.number}')
     if userdata.action != 'delete':
         if userdata.first_sector(sector) != userdata_info['first_sector']:
             raise LayoutError('userdata would move; only shrinking in place is supported')
@@ -420,7 +485,7 @@ def sgdisk_arguments(plan, device, userdata_info):
             f'--attributes={userdata.number}:=:' + userdata_info['attributes'],
         ]
     for item in plan.entries:
-        if item.name == USERDATA_NAME:
+        if item.name == USERDATA_NAME or item.action == 'delete':
             continue
         arguments += [
             f'--new={item.number}:{item.first_sector(sector)}:{item.last_sector(sector)}',

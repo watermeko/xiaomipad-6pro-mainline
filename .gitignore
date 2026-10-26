@@ -15,3 +15,7 @@ __pycache__/
 *.jpeg
 *.png
 *.heic
+
+# Local device dumps (partition tables, boot images): they carry per-device
+# identifiers and must never enter the repository.
+backups/

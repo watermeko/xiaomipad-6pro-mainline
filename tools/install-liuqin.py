@@ -205,6 +205,12 @@ def parse_arguments(argv=None):
                                             'linux_home takes the remainder')
     parser.add_argument('--keep-home', action='store_true',
                         help='Reinstall the system on an existing split layout and keep linux_home')
+    parser.add_argument('--reclaim-android', action='store_true',
+                        help='With --layout linux-only, start Ubuntu further back than userdata and '
+                             'delete the Android partitions that stand in the way (super, the '
+                             'vbmeta_system pair, bk010, mem, mbnconfig, rescue and userdata). '
+                             'mtdblk through cust keep their place; see RECLAIMED_NAMES in the '
+                             'layout engine for the exact list and why it stops there.')
     parser.add_argument('--rom-dir', type=Path,
                         help='Extracted stock Fastboot ROM directory; required by --layout dual')
     parser.add_argument('--android-boot', type=Path, metavar='IMG',
@@ -239,10 +245,15 @@ def reference_plan(parser, args):
     this preview exists so that the confirmation names real numbers.
     """
     disk = layout.reference_stock_disk()
-    region = disk.usable_end - disk.by_name(layout.USERDATA_NAME).start
     try:
+        if args.reclaim_android:
+            reclaimed_start, _ = layout.reclaim_region(disk)
+            region = disk.usable_end - reclaimed_start
+        else:
+            region = disk.usable_end - disk.by_name(layout.USERDATA_NAME).start
         android, root = layout.resolve_sizes(args.layout, args.android_size, args.root_size, region)
-        return layout.plan_layout(disk, args.layout, android, root)
+        return layout.plan_layout(disk, args.layout, android, root,
+                                  reclaim=args.reclaim_android)
     except layout.LayoutError as error:
         parser.error(str(error))
 
@@ -258,6 +269,10 @@ def validate_arguments(parser, args, preview=False):
     if args.resume_split and (args.keep_home or args.restore_partition_table or args.layout != 'dual'):
         parser.error('--resume-split continues a dual install on an existing split table;'
                      ' it cannot be combined with --keep-home, --restore-partition-table or another layout')
+    if args.reclaim_android and (args.layout != 'linux-only' or args.keep_home
+                                 or args.resume_split or args.restore_partition_table):
+        parser.error('--reclaim-android only applies to a fresh --layout linux-only install;'
+                     ' it cannot be combined with --keep-home, --resume-split or a table restore')
     if args.no_backup and (args.backup or not args.keep_home or args.restore_partition_table):
         parser.error('--no-backup requires --keep-home and cannot be combined with --backup or restore')
     if args.keep_home and (args.android_size or args.root_size):
@@ -620,9 +635,14 @@ def main(argv=None):
             raise RuntimeError('--resume-split found no split layout; nothing was written')
         else:
             layout.check_stock_device(disk)
-            region = disk.usable_end - disk.by_name(layout.USERDATA_NAME).start
+            if args.reclaim_android:
+                reclaimed_start, _ = layout.reclaim_region(disk)
+                region = disk.usable_end - reclaimed_start
+            else:
+                region = disk.usable_end - disk.by_name(layout.USERDATA_NAME).start
             android, root = layout.resolve_sizes(args.layout, args.android_size, args.root_size, region)
-            plan = layout.plan_layout(disk, args.layout, android, root)
+            plan = layout.plan_layout(disk, args.layout, android, root,
+                                      reclaim=args.reclaim_android)
             print(plan.table(), flush=True)
             confirm_plan(planned, plan)
             apply_layout(device_layout, disk, plan, saved, args.layout)
@@ -875,11 +895,19 @@ def confirm_plan(expected, actual):
     Only the sizes the operator chose are compared.  linux_home is the
     remainder by definition, so its size legitimately follows the capacity of
     the tablet in front of us rather than the preview's reference geometry.
+    The same holds for the partitions a reclaim deletes: they span whatever the
+    real table holds, while the preview has to use the reference geometry.
     """
     if [item.name for item in expected.entries] != [item.name for item in actual.entries]:
         raise RuntimeError('the computed layout has a different shape from the confirmed one')
     for one, two in zip(expected.entries, actual.entries):
-        if one.action != two.action or (one.name != layout.HOME_NAME and one.size != two.size):
+        if one.action != two.action:
+            raise RuntimeError(
+                'the tablet\'s partition table does not produce the layout that was confirmed '
+                f'({one.name}: {one.action} confirmed, {two.action} computed); nothing was written')
+        if one.action == 'delete' or one.name == layout.HOME_NAME:
+            continue
+        if one.size != two.size:
             raise RuntimeError(
                 'the tablet\'s partition table does not produce the layout that was confirmed '
                 f'({one.name}: {one.action} {one.size} confirmed, {two.action} {two.size} '
@@ -962,8 +990,15 @@ def apply_layout(device_layout, before, plan, saved, mode):
     # stale file-based-encryption keys are gone.  Zeroing the head of userdata
     # also removes the LIUQIN_ROOT superblock of the old whole-disk root, so no
     # second filesystem can answer to that label afterwards.
-    print('Wiping stale filesystem and encryption metadata...', flush=True)
-    device_layout('wipe-head', layout.USERDATA_NAME, str(layout.WIPE_BYTES), timeout=300)
+    #
+    # With --reclaim-android the userdata entry is gone as a whole, so there is
+    # nothing to zero: super and the rest of the reclaimed region are deleted
+    # outright and the new linux_root covers them.
+    if plan.entry(layout.USERDATA_NAME).action == 'delete':
+        print('Reclaiming the Android tail; nothing to wipe in userdata.', flush=True)
+    else:
+        print('Wiping stale filesystem and encryption metadata...', flush=True)
+        device_layout('wipe-head', layout.USERDATA_NAME, str(layout.WIPE_BYTES), timeout=300)
     if mode == 'dual':
         device_layout('wipe-head', layout.METADATA_NAME, str(layout.WIPE_BYTES), timeout=300)
     disk_path = json.loads((saved / 'manifest.json').read_text())['disk']

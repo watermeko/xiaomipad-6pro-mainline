@@ -288,6 +288,54 @@ with tempfile.TemporaryDirectory(prefix='liuqin-layout-test-') as directory:
     check('--keep-home and an explicit size together are refused',
           both.returncode != 0, both.stderr)
 
+    # --- reclaiming the Android tail ----------------------------------------
+    build_stock_image(image)
+    disk = read(image)
+    start, reclaimed = layout.reclaim_region(disk)
+    check('the reclaimed region starts at super',
+          disk.by_name('super').start == start, str(start))
+    check('the reclaimed region reaches the end of the usable area',
+          reclaimed[-1].end == disk.usable_end, str(reclaimed[-1].end))
+    check('cust and everything before super is left in place',
+          all(disk.by_name(name) is not None
+              for name in ('cust', 'rawdump', 'minidump', 'crash_history', 'mtdblk', 'persist')))
+
+    plan = layout.plan_layout(disk, 'linux-only', 0, 32 * 1024 ** 3, reclaim=True)
+    check('a reclaim plan deletes every reclaimed partition',
+          {item.name for item in plan.entries if item.action == 'delete'}
+          == {item.name for item in reclaimed})
+    check('a reclaim plan starts linux_root at the reclaim start',
+          plan.entry('linux_root').start == start)
+    check('a reclaim plan gives the rest of the disk to linux_home',
+          plan.entry('linux_home').end == disk.usable_end)
+    check('a reclaim plan removes userdata exactly once',
+          sum(1 for item in plan.entries if item.name == 'userdata') == 1)
+
+    apply(image, plan, info(image, 35))
+    after = read(image)
+    for item in reclaimed:
+        check('sgdisk removed ' + item.name, after.by_name(item.name) is None)
+    for name in ('cust', 'persist', 'persistbak', 'metadata', 'misc'):
+        check('sgdisk kept ' + name, after.by_name(name) is not None)
+    check('sgdisk placed linux_root at the reclaim start',
+          after.by_name('linux_root').first_sector == start // after.sector_size,
+          str(after.by_name('linux_root').first_sector))
+    check('the re-read table matches the plan', layout.verify_applied(after, plan))
+
+    reclaim_preview = subprocess.run(base + ['--layout', 'linux-only', '--reclaim-android'],
+                                     capture_output=True, text=True)
+    check('--check --reclaim-android prints super in the plan',
+          reclaim_preview.returncode == 0 and 'super' in reclaim_preview.stdout,
+          reclaim_preview.stdout + reclaim_preview.stderr)
+    print(reclaim_preview.stdout.strip())
+    mixed = subprocess.run(base + ['--layout', 'dual', '--reclaim-android'],
+                           capture_output=True, text=True)
+    check('--reclaim-android is refused with the dual layout',
+          mixed.returncode != 0 and 'linux-only' in mixed.stderr, mixed.stderr)
+
+
+
+
 if failures:
     sys.exit('layout test failures:\n' + '\n'.join('  ' + item for item in failures))
 print('PASS: partition layout engine; no device, no loop device, no evidence dump')
