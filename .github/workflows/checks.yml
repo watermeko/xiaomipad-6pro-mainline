@@ -23,6 +23,16 @@ jobs:
                   ast.parse(path.read_text(), filename=str(path))
           for path in Path('tools').rglob('*.sh'):
               subprocess.run(['sh', '-n', str(path)], check=True)
+          # Project-owned scripts inside the device overlay are shell too; they
+          # ship to the tablet and are not covered by the tools/ walk.
+          for base in ('device/gnome-overlay/usr/local/libexec',
+                       'device/gnome-overlay/usr/local/sbin',
+                       'device/gnome-overlay/usr/local/bin'):
+              for path in sorted(Path(base).iterdir()):
+                  first = path.read_bytes().split(b'\n', 1)[0]
+                  if b'python3' in first or b'sh' not in first:
+                      continue
+                  subprocess.run(['sh', '-n', str(path)], check=True)
           PY
       - name: Installer offline checks
         run: |

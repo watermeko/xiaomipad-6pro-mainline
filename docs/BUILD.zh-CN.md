@@ -150,6 +150,13 @@ native boot 构建器直接使用指定内核的 Image、DTB，以及已装配�
 
 ## 根文件系统归档
 
+打归档之前，`tools/build-liuqin-native-root.sh` 的 `debs` 阶段会执行经过评审的
+rootfs 裁剪：`device/configs/liuqin-root-trim.txt` 列出镜像删掉的包和不允许丢的包。
+该阶段会 purge、autoremove、跑 `apt-get check`，只要有 `[keep]` 里的包消失就让构建失败。
+同一份文件会安装到 `/usr/share/liuqin/root-trim.txt`，供已安装平板上的
+`/usr/local/sbin/liuqin-root-trim` 使用。每条目的测量依据、以及给产品提供 zram swap
+的 `device/configs/liuqin-memory.config` 内核 fragment，见[内存说明](MEMORY.zh-CN.md)。
+
 装配及 manifest 阶段完成后，在相同 `OUT_DIR` 下执行
 `sudo -E sh tools/build-liuqin-native-root.sh pack`，生成 `rootfs.tar.gz` 及校验文件。
 归档期间输入树不可修改，不要对已经启动、创建账户或注入本机数据的根目录打公共包。

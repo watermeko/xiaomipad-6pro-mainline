@@ -45,6 +45,7 @@ Use a complete installation bundle from [GitHub Releases](https://github.com/yzd
 | Install Ubuntu | [Installation guide](docs/FLASHING.md) |
 | Build the kernel and device components | [Build guide](docs/BUILD.md) |
 | Restore Android | [Data and recovery instructions](docs/FLASHING.md#data-and-recovery) |
+| Reclaim memory (zram, package trim) | [Memory notes](docs/MEMORY.md) |
 
 Prebuilt installation bundles include matching boot and root filesystem images, installation tools and checksums.
 

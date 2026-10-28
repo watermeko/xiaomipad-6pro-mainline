@@ -45,6 +45,7 @@
 | 安装 Ubuntu | [安装指南](docs/FLASHING.zh-CN.md) |
 | 自行编译内核和设备组件 | [构建指南](docs/BUILD.zh-CN.md) |
 | 恢复 Android | [数据与恢复说明](docs/FLASHING.zh-CN.md#数据与恢复) |
+| 精简内存（zram、裁剪软件包） | [内存说明](docs/MEMORY.zh-CN.md) |
 
 预编译安装包包括匹配的启动镜像、根文件系统、安装工具与校验文件。
 

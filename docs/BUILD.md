@@ -169,6 +169,16 @@ boot image or a kernel from a different build.
 
 ## Root Filesystem Archives
 
+Before packing, the `debs` stage of `tools/build-liuqin-native-root.sh` applies
+the reviewed root filesystem trim: `device/configs/liuqin-root-trim.txt` lists
+the packages the image removes and the packages it may not lose. The stage
+purges, autoremoves, runs `apt-get check` and fails the build if any `[keep]`
+package is gone. The same file is installed to `/usr/share/liuqin/root-trim.txt`
+for `/usr/local/sbin/liuqin-root-trim` on an installed tablet. See the
+[memory notes](MEMORY.md) for the measurements behind each entry and for the
+`device/configs/liuqin-memory.config` kernel fragment that gives the product
+zram swap.
+
 After assembly and manifest generation, run
 `sudo -E sh tools/build-liuqin-native-root.sh pack` with the same `OUT_DIR`.
 This produces `rootfs.tar.gz` and its checksum without rebuilding components or
