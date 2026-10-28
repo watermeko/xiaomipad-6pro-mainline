@@ -37,6 +37,13 @@ bluez
 wpasupplicant
 # Device stack this project owns the behaviour of.
 iio-sensor-proxy
+# ssccli and the SSC-enabled iio-sensor-proxy link these four directly; they
+# used to arrive as leftovers of modemmanager and fwupd, and purging those
+# without naming them broke auto-rotation and the fingerprint startup gate.
+libqrtr1
+libqrtr-glib0
+libqmi-glib5
+libprotobuf-c1
 fprintd
 libpam-fprintd
 # Camera preview and recording need these; they are image content, not
@@ -61,14 +68,24 @@ thunderbird
 # Both were already masked in device/gnome-overlay; purging removes the
 # interpreter that stayed resident (unattended-upgrade-shutdown ~23 MB,
 # update-notifier ~28 MB) instead of only disabling its timer.
+#
+# update-notifier is also a Recommends anchor: purging it alone makes apt pull
+# gnome-package-updater and gnome-packagekit-common, i.e. the same updater UI
+# under another name.  Name those two as well so the purge installs nothing.
 unattended-upgrades
 update-notifier
+gnome-package-updater
+gnome-packagekit-common
 # --- firmware / printing / telephony -------------------------------------
 # fwupd: the board has no updatable firmware capsule this product supports.
 fwupd
 # Printing: no printer driver has evidence on this device.
+# cups alone is not enough: purging it makes apt install legacy-printer-app
+# (libpappl + a CUPS-compatible service) as its replacement.  Name it too so
+# the purge is a removal rather than an exchange.
 cups
 cups-browsed
+legacy-printer-app
 # ipp-usb and its mDNS discovery daemon exist only to publish a USB printer.
 ipp-usb
 avahi-daemon
@@ -88,7 +105,7 @@ switcheroo-control
 # and the address book, not the shell.  Measured 244 MB RSS as a group.
 evolution-data-server
 gnome-calendar
-# Initial-setup accounts page pulls in an online-accounts wizard that talks to
-# EDS; gnome-online-accounts itself stays (it is a gnome-control-center
-# dependency), only the calendar/contact backends go.
-evolution-data-server-common
+# evolution-data-server-common is deliberately NOT purged: it ships the
+# libedataserver client libraries, and gnome-shell, gdm3 and ubuntu-session
+# link those.  Purging it cascades into all three; only the server-side
+# daemons go away.

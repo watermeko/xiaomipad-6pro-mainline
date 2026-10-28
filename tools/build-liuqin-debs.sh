@@ -353,6 +353,22 @@ build_sensors() {
 	done
 	# Runtime libraries come from the distribution via Depends, not from a
 	# private copy inside the package.
+	#
+	# The Depends list below has to name what the binaries really link against.
+	# ssccli and the SSC-enabled iio-sensor-proxy need libqmi-glib5 and
+	# libqrtr-glib0 as well as the QRTR/protobuf pair.  Those two used to arrive
+	# as leftovers of modemmanager and fwupd, so any root filesystem that drops
+	# those (device/configs/liuqin-root-trim.txt) left the gate exiting 127 with
+	# "cannot open shared object file", and auto-rotation plus the fingerprint
+	# startup gate failed closed behind it.  Assert the closure here instead of
+	# discovering it on the panel.
+	for elflib in /usr/bin/ssccli /usr/libexec/iio-sensor-proxy \
+		/usr/bin/hexagonrpcd /usr/libexec/liuqin-ssc-sample-gate; do
+		[ -e "$root$elflib" ] || continue
+		missing=$(ldd "$root$elflib" 2>/dev/null |
+			sed -n 's/.*\(lib[a-zA-Z0-9._+-]*\.so\.[0-9]*\) => not found.*/\1/p' | sort -u)
+		[ -z "$missing" ] || die "$elflib links against unprovided libraries: $missing"
+	done
 	rm -f "$root"/usr/lib/aarch64-linux-gnu/libqrtr.so.1* \
 		"$root"/usr/lib/aarch64-linux-gnu/libprotobuf-c.so.1*
 	# End the mixed-ownership arrangement: instead of a /usr/local binary plus
@@ -383,7 +399,7 @@ build_sensors() {
 	} >"$root/DEBIAN/postinst"
 	cp "$work/$pkg.preinst" "$root/DEBIAN/preinst"
 	cp "$work/$pkg.postrm" "$root/DEBIAN/postrm"
-	pack "$pkg" arm64 'libqrtr1, libprotobuf-c1, iio-sensor-proxy' \
+	pack "$pkg" arm64 'libqrtr1, libqrtr-glib0, libqmi-glib5, libprotobuf-c1, iio-sensor-proxy' \
 		'Xiaomi Pad 6 Pro (liuqin) SSC sensor stack (hexagonrpcd, libssc, SSC iio-sensor-proxy)'
 }
 
