@@ -61,6 +61,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y busybox-static e2fsprogs
           sh tests/install-root.sh
+      - name: Shipped customisations are provable
+        run: |
+          # tests/memory-features.py asserts the kernel symbols, the masked
+          # units and the package selections this repository ships.  It is what
+          # the image builder's 'features' stage runs against the assembled
+          # tree; here it runs against the committed configuration, so a trim
+          # list or fragment edit that drops a feature fails the PR instead of
+          # the next release.
+          python3 - <<'CODE'
+          import importlib.util, subprocess, sys, hashlib
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('mf', 'tests/memory-features.py')
+          mf = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mf)
+          lock = __import__('json').loads(Path('kernel/source.json').read_text())
+          symbols = {name: value for name, spec_ in mf.FEATURES.items() for name, value in spec_.get('config', {}).items()}
+          fragments = ''.join(Path(p).read_text() for p in lock['config_fragments'])
+          missing = [name for name in symbols if name + '=' not in fragments and '# ' + name + ' is not set' not in fragments]
+          if missing:
+              raise SystemExit('these feature symbols are in no fragment: ' + ' '.join(missing))
+          # Section headers must be a line of their own: the file's own comments
+          # mention `[keep]` and `[purge]` in prose.
+          def section(text, want):
+              out, on = [], False
+              for line in text.splitlines():
+                  if line.strip().startswith('['):
+                      on = line.strip() == want
+                      continue
+                  if on and line.strip() and not line.strip().startswith('#'):
+                      out.append(line.split()[0])
+              return out
+          trim = Path('device/configs/liuqin-root-trim.txt').read_text()
+          if not section(trim, '[keep]') or not section(trim, '[purge]'):
+              raise SystemExit('the trim list lost a section')
+          keep = section(trim, '[keep]')
+          for package in mf.FEATURES['rootfs-trim']['packages_present']:
+              if package not in keep:
+                  raise SystemExit('the trim [keep] section does not name ' + package)
+          print('feature sources are consistent with the committed configuration')
+          CODE
       - name: Sensor startup policy
         run: |
           sudo apt-get update

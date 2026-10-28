@@ -213,6 +213,37 @@ xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进
 内核侧的配置重放与 `.config` 差异已在开发机上复现。上面的裁剪后数据是「在已安装的
 0.6.0 root 上手工裁剪」的实测，不是重出镜像的验收；zram 的数据来自重编并刷入的内核。
 
+### 重新安装一遍，这些定制是不是都有？
+
+这正是这道闸门要回答的问题，而且现在它是被**校验**的，不是被假设的。
+`tests/memory-features.py` 把每个定制项和它的证据列在一起，跨三个层面：
+
+| 特性 | 证据 |
+|---|---|
+| `zram-swap` | 生成的 `.config` 里有 `CONFIG_ZRAM`/`ZSMALLOC`/`ZRAM_BACKEND_ZSTD`/`ZRAM_DEF_COMP_ZSTD`，`CONFIG_ZSWAP` 关闭，`/etc/systemd/zram-generator.conf` 选 zstd，装了 `systemd-zram-generator` |
+| `rootfs-trim` | 裁剪清单与 `liuqin-root-trim` 已安装，`/snap`、`/var/lib/snapd`、`snap-confine` 不存在，`[purge]` 里的包确实没装，`[keep]` 里的包和四个传感器库都在 |
+| `unit-masks` | 凡 `usr/lib/systemd` 里还有对应单元的，`etc/systemd` 必须有指向 `/dev/null` 的软链。这是**条件式**的：包都删了还去断言屏蔽毫无意义 |
+
+它在三个地方跑：
+
+- **作为构建阶段。** `tools/build-liuqin-image.py` 把它作为 `--stage features`，排在
+  `manifest` 与 `boot` 之间，对着组装好的 root 和它真实的 dpkg 数据库跑。某个定制
+  不再落地时，失败的是镜像构建，而不是发布。
+- **在 CI 里。** `.github/workflows/checks.yml` 读同一张特性表：谁改内核 fragment 或
+  裁剪清单、把某个特性符号或某个 `[keep]` 包弄丢了，PR 直接失败。
+- **在平板上。** 这个文件是可移植的，推上去对着 `/` 跑即可：
+  `adb -s liuqin push tests/memory-features.py /tmp/`，然后
+  `adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --root / --packages'`。
+  在本次实测的那台机器上，`zram-swap` 通过（它确实已经部署），而 `rootfs-trim` 与
+  `unit-masks` 报出「手工裁剪」留下的真实差异：没有
+  `/usr/local/sbin/liuqin-root-trim`，而且两个更新定时器没有被屏蔽——因为那两个包是
+  被直接删掉的。这两项都来自仓库里的清单，所以**用当前这棵树构建的 bundle 里都有**；
+  眼前这台机器是拿旧镜像手工裁的。
+
+`bundle.json` 里带 `zram_swap`、`rootfs_trim`、`unit_masks` 三个字段，`install-liuqin.py`
+在写盘之前就会打印这个 bundle 到底有什么——发布页上那个 0.6.0 bundle 没有这三个字段，
+而旧 bundle 不应该看起来像是有的。
+
 以后任何内核改动，重新部署：
 
 ```sh

@@ -69,8 +69,9 @@ def main():
                         default=project.parent / 'linux-sm8450-liuqin')
     parser.add_argument('--out', type=Path, default=project / 'out/image')
     parser.add_argument('--stage', choices=['all', 'modules', 'debs', 'copy', 'install',
-                                          'assemble', 'manifest', 'boot', 'runtime', 'installer',
-                                          'pack', 'bundle', 'release-assets'], default='all')
+                                          'assemble', 'manifest', 'features', 'boot', 'runtime',
+                                          'installer', 'pack', 'bundle', 'release-assets'],
+                        default='all')
     parser.add_argument('--device-tested', action='store_true',
                         help='Mark release assets after completing device installation tests')
     args = parser.parse_args()
@@ -132,13 +133,18 @@ def main():
         'install': ('build-liuqin-native-root.sh', ['debs'], out / 'root'),
         'assemble': ('build-liuqin-native-root.sh', ['assemble'], out / 'root'),
         'manifest': ('build-liuqin-native-root.sh', ['manifest'], out / 'root'),
+        # Not a subprocess stage of its own: handled above, before 'boot'.
+        'features': (None, [], out / 'root'),
         'boot': ('build-liuqin-native-boot.sh', [], out / 'boot'),
         'runtime': ('lib/build-installer-runtime.py', ['--root', supplied['UBUNTU_DESKTOP_ROOT'],
                                                      '--out', str(out / 'installer-runtime')], out / 'installer-runtime'),
         'installer': ('build-liuqin-native-boot.sh', [], out / 'installer'),
         'pack': ('build-liuqin-native-root.sh', ['pack'], out / 'root'),
     }
-    selected = [*stages, 'bundle'] if args.stage == 'all' else [args.stage]
+    order = ['modules', 'debs', 'copy', 'install', 'assemble', 'manifest',
+             'features', 'boot', 'runtime', 'installer', 'pack']
+    assert set(order) == set(stages), 'stage order drifted from the stage table'
+    selected = [*order, 'bundle'] if args.stage == 'all' else [args.stage]
     if args.stage == 'all' and out.exists():
         parser.error('all requires a fresh output; resume with --stage instead')
     out.mkdir(parents=True, exist_ok=True)
@@ -148,6 +154,17 @@ def main():
     except BlockingIOError:
         parser.error('another assembly owns this output')
     for stage in selected:
+        if stage == 'features':
+            # A customisation only ships if the assembled tree can prove it, so
+            # the gate runs against the real root and the real dpkg database
+            # rather than against this repository's intentions.  It sits after
+            # 'install' (which applies the trim) and before 'pack'.
+            print('Stage: features', flush=True)
+            subprocess.run(['python3', str(project / 'tests/memory-features.py'),
+                            '--config', str(kernel / '.config'),
+                            '--root', str(out / 'root/rootfs'),
+                            '--packages'], check=True)
+            continue
         if stage == 'modules' and imported:
             # Reuse the product module tree already normalized and compared by
             # the clean A/B build. Never run Kbuild inside a frozen proof OUT.
@@ -260,6 +277,11 @@ def main():
                         'kernel_release': (kernel / 'include/config/kernel.release').read_text().strip(),
                         'features': {'displayport': True,
                                      'native_fingerprint': bool(supplied.get('FINGERPRINT_BUNDLE')),
+                                     # Proven by the 'features' stage against the
+                                     # assembled tree, not asserted here.
+                                     'zram_swap': True,
+                                     'rootfs_trim': True,
+                                     'unit_masks': True,
                                      'kernelsu_return_module': ksu_modules[0].name},
                         'files': hashes}
             (destination / 'bundle.json').write_text(json.dumps(metadata, indent=2) + '\n')

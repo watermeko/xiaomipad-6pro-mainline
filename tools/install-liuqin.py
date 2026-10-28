@@ -399,6 +399,14 @@ def main(argv=None):
     manifest = json.loads((bundle / 'bundle.json').read_text())
     if manifest['device'] != 'liuqin':
         parser.error('wrong device bundle')
+    # Say what the bundle carries before anything is written to the tablet.  A
+    # bundle assembled before a customisation existed does not have these keys,
+    # and an old bundle must not be presented as if it did.
+    features = manifest.get('features', {})
+    for key, label in (('zram_swap', 'zram swap'),
+                       ('rootfs_trim', 'root filesystem trim'),
+                       ('unit_masks', 'masked daemons')):
+        print('  %-22s %s' % (label + ':', 'yes' if features.get(key) else 'not in this bundle'))
     for name in ('boot.img', 'installer.img', 'rootfs.tar.gz'):
         if sha(bundle / name) != manifest['files'][name]:
             parser.error('bundle checksum mismatch: ' + name + ' —— 包文件损坏或不完整，请重新下载')

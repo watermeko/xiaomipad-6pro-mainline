@@ -256,6 +256,42 @@ on the development host. The post-trim figures above are measurements of a
 hand-applied trim on the installed 0.6.0 root, not of a rebuilt image; the zram
 figures are from the rebuilt and flashed kernel.
 
+### Does a fresh install get all of this?
+
+That is the question the gate exists to answer, and the answer is now checked
+rather than assumed.  `tests/memory-features.py` names each customisation and
+the evidence for it, across three surfaces:
+
+| Feature | Proven by |
+|---|---|
+| `zram-swap` | `CONFIG_ZRAM`/`ZSMALLOC`/`ZRAM_BACKEND_ZSTD`/`ZRAM_DEF_COMP_ZSTD` in the generated `.config`, `CONFIG_ZSWAP` off, `/etc/systemd/zram-generator.conf` selecting zstd, `systemd-zram-generator` installed |
+| `rootfs-trim` | the trim list and `liuqin-root-trim` installed, `/snap`, `/var/lib/snapd` and `snap-confine` gone, the purged packages absent, the `[keep]` packages and the four sensor libraries present |
+| `unit-masks` | for every masked unit that `usr/lib/systemd` still ships, `etc/systemd` has a `/dev/null` symlink. Conditional on purpose: masking a unit whose package was purged proves nothing |
+
+It runs in three places:
+
+- **as a build stage.** `tools/build-liuqin-image.py` runs it as `--stage
+  features`, between `manifest` and `boot`, against the assembled root and its
+  real dpkg database. A customisation that stopped landing fails the image
+  build, not the release.
+- **in CI.** `.github/workflows/checks.yml` reads the same feature table and
+  refuses a pull request whose kernel fragments or trim list no longer supply a
+  feature symbol or a `[keep]` package.
+- **on a tablet.** The file is portable; push it and run it against `/`:
+  `adb -s liuqin push tests/memory-features.py /tmp/` then
+  `adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --root / --packages'`.
+  On the unit this work was measured on, `zram-swap` passes — that one *is*
+  deployed — while `rootfs-trim` and `unit-masks` report what a hand-applied
+  trim leaves behind: no `/usr/local/sbin/liuqin-root-trim`, and the update
+  timer masks missing because those packages were purged rather than masked.
+  Both come from the shipped list, so a bundle built from this tree has them;
+  the tablet in front of us was trimmed by hand from an older image.
+
+`bundle.json` carries `zram_swap`, `rootfs_trim` and `unit_masks` so
+`install-liuqin.py` prints what a bundle actually contains before it writes
+anything — the 0.6.0 bundle on the release page does not have them, and an old
+bundle must not read as if it did.
+
 Deploying again, after any kernel change:
 
 ```sh
