@@ -45,7 +45,7 @@
 | 安装 Ubuntu | [安装指南](docs/FLASHING.zh-CN.md) |
 | 自行编译内核和设备组件 | [构建指南](docs/BUILD.zh-CN.md) |
 | 恢复 Android | [数据与恢复说明](docs/FLASHING.zh-CN.md#数据与恢复) |
-| 精简内存（zram、裁剪软件包） | [内存说明](docs/MEMORY.zh-CN.md) |
+| 精简内存（zram、裁剪软件包） | [内存调整](#内存调整)，详见[内存说明](docs/MEMORY.zh-CN.md) |
 
 预编译安装包包括匹配的启动镜像、根文件系统、安装工具与校验文件。
 
@@ -120,6 +120,93 @@
 | 关机充电 | 启动阶段充电保持 | 🟡 部分支持 | 无完整充电显示界面；关机充电时开机需长按电源键 |
 | 挂起 / 恢复 | Linux 电源管理 | 🟡 部分支持 | 基础恢复已验证，外设恢复和深休眠功耗仍需进一步测试 |
 | RTC / 离线时间保持 | Qualcomm PMK8350 RTC | 🧪 未验证 | 联网校时可用；不保证离线写入及断电后的时间保持 |
+
+## 内存调整
+
+发布页上的 v0.6.0 安装包早于这部分工作：照原样安装，它会把整个 Ubuntu 桌面常驻在内存里，
+跑着 `snapd`、`fwupd`、CUPS 和 Evolution 一组守护进程，而且**完全没有 swap**——安装布局
+没有给 swap 分区留位置，产品内核又没开 `CONFIG_ZRAM`，于是 `systemd-oomd` 只剩「杀进程」
+一种手段。在 8 GB 版本上实测，那是 2267 MB 的空闲 PSS，却没有任何可回收的东西。
+
+两件事解决它，现在都在仓库里：
+
+| 组成 | 作用 |
+|---|---|
+| 用 `kernel/source.json` 加上 `device/configs/liuqin-memory.config` 重编内核得到的 boot 镜像 | 让内核具备 zram + zstd，从而有 3 GiB 压缩 swap |
+| `liuqin-memory-tweaks` 包 | 装 zram 配置、经评审的裁剪清单、`liuqin-root-trim` 和单元屏蔽 |
+
+两者都应用后实测：完整会话下的总 PSS 1406 MB，且一个分配 6720 MiB（超过 `MemTotal`）的
+进程能以 19.24:1 的压缩比跑完，而不是结束会话。逐分组的数据和清单里每一条的理由见
+[docs/MEMORY.zh-CN.md](docs/MEMORY.zh-CN.md)。
+
+### 全新安装
+
+一旦发布包含这些改动的安装包，就不需要额外操作：安装器会在首次开机前对解包出的 root 执行
+`device/tweaks/apply-root-tweaks.sh`，内核也按锁定的配置构建。某个安装包到底带了哪些特性，
+记录在它 `bundle.json` 的 `features` 字段（`zram_swap`、`rootfs_trim`、`unit_masks`），
+`install-liuqin.py` 会在写入任何东西之前打印出来。
+
+**已发布的 v0.6.0 安装包不包含这些。** 下结论前先确认：
+
+```sh
+python3 install.py --bundle . --check    # 会打印这三行特性
+```
+
+### 已经装了 v0.6.0
+
+取得这两个组成部分并按顺序应用——先内核，因为没有它 zram 配置没有驱动可绑定：
+
+```sh
+# 1. 只写入 boot_a；boot_b 保留引导程序的回退副本
+sudo blockdev --setrw /dev/sde && sudo blockdev --setrw /dev/sde14
+sudo dd if=boot-*-zram.img of=/dev/disk/by-partlabel/boot_a bs=1M conv=notrunc,fsync
+sync && sudo reboot
+
+# 2. root 文件系统一侧
+sudo apt-get install -y ./liuqin-memory-tweaks_*_arm64.deb
+
+# 3. 先看裁剪会删什么，再执行，然后重启
+sudo liuqin-root-trim --dry-run
+sudo liuqin-root-trim
+```
+
+第 1 步用 `tools/deploy-liuqin-boot.py` 更稳妥：它会回读比对、在所有退出路径上恢复分区与其
+所在磁盘的只读标志，并先把现行 `boot_a` 存到 `backups/` 下。优先用它而不是上面的 `dd`。
+
+自己重新构建这两个组成部分：
+
+```sh
+python3 tools/build-liuqin-kernel.py --source ../linux-sm8450-liuqin --out out/kernel
+python3 tools/build-liuqin-memory-tweaks.py --kernel-out out/kernel
+```
+
+它拒绝已存在的输出目录，所以重新构建前要先 `rm -rf out/memory-tweaks`，或用
+`--out` 指到新目录。产物是可复现的：同一个内核构建、同一棵树，产出的两个哈希每次都一致。
+
+### 验证是否生效
+
+```sh
+adb -s liuqin push tests/memory-features.py /tmp/
+adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --root / --packages'
+```
+
+它逐项报告每个定制是否到位，有任一缺失就以非零状态退出。同一个文件也是镜像构建的
+`--stage features` 闸门，所以安装包不可能发布一个「定制没落地」的系统。
+
+### 回退
+
+每一步都只是包名加一个 boot 镜像。
+
+```sh
+sudo apt-get install snapd firefox                                    # 装回 snap
+sudo apt-get install fwupd cups cups-browsed modemmanager rsyslog \
+    networkd-dispatcher switcheroo-control evolution-data-server gnome-calendar
+sudo rm /etc/systemd/user/localsearch-3.service /etc/systemd/system/colord.service
+sudo rm /etc/systemd/zram-generator.conf                              # 去掉 zram swap
+```
+
+内核一侧无法在运行时回退：需要重编并刷 boot 镜像，或用 `backups/liuqin-boot/` 下的
+`boot_a` 副本。
 
 ## 使用与维护
 

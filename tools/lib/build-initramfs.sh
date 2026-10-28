@@ -577,6 +577,14 @@ if [ -n "${INSTALLER_RUNTIME:-}" ]; then
 	cp "$project_root/tools/lib/install-layout.sh" "$staging/usr/lib/liuqin/install-layout.sh"
 	cp "$project_root/tools/lib/install-switch-store.sh" "$staging/usr/lib/liuqin/install-switch-store.sh"
 	cp "$project_root/tools/provision-liuqin-from-persist.sh" "$staging/usr/lib/liuqin/provision.sh"
+	# The root tweaks, with their payload staged from the files that own them.
+	# install-root.sh applies them to the extracted tree, so a fresh install is
+	# trimmed and masked before it first boots instead of needing a second pass.
+	cp "$project_root/device/tweaks/apply-root-tweaks.sh" "$staging/usr/lib/liuqin/apply-root-tweaks.sh"
+	chmod 0755 "$staging/usr/lib/liuqin/apply-root-tweaks.sh"
+	sh "$project_root/device/tweaks/stage-payload.sh" "$staging/usr/lib/liuqin" >/dev/null
+	[ -f "$staging/usr/lib/liuqin/payload/etc/systemd/zram-generator.conf" ] ||
+		{ echo 'the root-tweak payload did not stage' >&2; exit 1; }
 	printf 'readonly\n' >"$staging/etc/liuqin-storage-mode"
 	printf 'liuqin\n' >"$staging/etc/liuqin-installer"
 	chmod 0644 "$staging/etc/liuqin-storage-mode" "$staging/etc/liuqin-installer"

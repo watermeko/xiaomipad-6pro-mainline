@@ -51,7 +51,11 @@ FEATURES = {
         'why': 'snap, the update notifiers, fwupd, printing and the Evolution '
                'daemons were 580 MB of the idle baseline',
         'paths': {'/usr/share/liuqin/root-trim.txt': None,
-                  '/usr/local/sbin/liuqin-root-trim': None},
+                  '/usr/local/sbin/liuqin-root-trim': None,
+                  # The applier that both the installer and the incremental
+                  # package use.  Its absence is what makes a hand-trimmed
+                  # system differ from a built one.
+                  '/usr/lib/liuqin/apply-root-tweaks.sh': None},
         'absent': ['/snap', '/var/lib/snapd', '/usr/lib/snapd/snap-confine'],
         'packages_absent': ['snapd', 'firefox', 'thunderbird', 'unattended-upgrades',
                             'update-notifier', 'fwupd', 'cups', 'cups-browsed',

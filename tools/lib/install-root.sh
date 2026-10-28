@@ -227,6 +227,14 @@ mounted=true
 mkdir /mnt/install/native-root
 /usr/bin/tar -xzf "$archive" -C /mnt/install/native-root \
 	--numeric-owner --same-owner --same-permissions --acls --xattrs --xattrs-include='*' --warning=no-timestamp
+# The root filesystem customisations live in one script that both this installer
+# and the incremental package run: the zram geometry, the reviewed trim list,
+# the masks and (when dpkg is available) the purge.  Applying them here is what
+# makes a fresh install carry them, instead of leaving them to a second pass on
+# a booted system.  The purge is skipped: this userland has no dpkg, and the
+# tree is already trimmed by the image build.
+sh /usr/lib/liuqin/apply-root-tweaks.sh /mnt/install/native-root --no-purge ||
+	die 'the root filesystem customisations did not apply'
 PERSIST_SRC=/run/persist sh /usr/lib/liuqin/provision.sh /mnt/install/native-root
 if [ "$rescue" = ENABLE-USB-RESCUE ]; then
 	touch /mnt/install/native-root/etc/liuqin-rescue-enabled

@@ -45,7 +45,7 @@ Use a complete installation bundle from [GitHub Releases](https://github.com/yzd
 | Install Ubuntu | [Installation guide](docs/FLASHING.md) |
 | Build the kernel and device components | [Build guide](docs/BUILD.md) |
 | Restore Android | [Data and recovery instructions](docs/FLASHING.md#data-and-recovery) |
-| Reclaim memory (zram, package trim) | [Memory notes](docs/MEMORY.md) |
+| Reclaim memory (zram, package trim) | [Memory tweaks](#memory-tweaks), then [Memory notes](docs/MEMORY.md) |
 
 Prebuilt installation bundles include matching boot and root filesystem images, installation tools and checksums.
 
@@ -121,6 +121,103 @@ Verified features at a glance; see the table below for the scope of each:
 | Charging while powered off | Boot-stage charging hold | 🟡 Partial | No complete charging display; use a long power-key press to boot while charging |
 | Suspend / resume | Linux power management | 🟡 Partial | Basic resume verified; peripheral recovery and deep-sleep power need further testing |
 | RTC / offline time retention | Qualcomm PMK8350 RTC | 🧪 Unverified | Network time synchronization works; offline writes and power-loss retention are not guaranteed |
+
+## Memory Tweaks
+
+The v0.6.0 bundle on the [releases page](https://github.com/yzddmr6/xiaomipad-6pro-mainline/releases)
+predates this work: installed as-is, it keeps the whole Ubuntu desktop resident,
+runs `snapd`, `fwupd`, CUPS and the Evolution daemons, and has **no swap at all** —
+the install layout leaves no room for a swap partition, and the product kernel had
+`CONFIG_ZRAM` unset, so `systemd-oomd` could only kill. Measured on the 8 GB unit,
+that is 2267 MB of idle PSS with no reclaim target.
+
+Two pieces fix it, and both are in this repository now:
+
+| Piece | What it does |
+|---|---|
+| a boot image with the kernel rebuilt from `kernel/source.json` plus `device/configs/liuqin-memory.config` | gives the kernel `zram` with zstd, so 3 GiB of compressed swap exists |
+| `liuqin-memory-tweaks` package | installs the zram geometry, the reviewed trim list, `liuqin-root-trim` and the unit masks |
+
+Measured after applying both: 1406 MB total PSS with a full session up, and a
+process allocating 6720 MiB (more than `MemTotal`) completes at a 19.24:1
+compression ratio instead of ending the session. `docs/MEMORY.md` has the
+per-group numbers and the reason for every entry in the trim list.
+
+### If you are installing fresh
+
+Nothing extra to do once a bundle is published that includes these changes: the
+installer runs `device/tweaks/apply-root-tweaks.sh` on the extracted root
+archive before first boot, and the kernel is built from the locked configuration.
+Which of this a given bundle carries is recorded in its `bundle.json` under
+`features` (`zram_swap`, `rootfs_trim`, `unit_masks`) and printed by
+`install-liuqin.py` before it writes anything.
+
+**The published v0.6.0 bundle does not carry them.** Check before you assume:
+
+```sh
+python3 install.py --bundle . --check    # prints the feature lines
+```
+
+### If you already installed v0.6.0
+
+Build or obtain the two pieces and apply them in order — the kernel first,
+because without it the zram configuration has no driver to bind:
+
+```sh
+# 1. the kernel, into boot_a only; boot_b keeps the bootloader's fallback copy
+sudo blockdev --setrw /dev/sde && sudo blockdev --setrw /dev/sde14
+sudo dd if=boot-*-zram.img of=/dev/disk/by-partlabel/boot_a bs=1M conv=notrunc,fsync
+sync && sudo reboot
+
+# 2. the root filesystem side
+sudo apt-get install -y ./liuqin-memory-tweaks_*_arm64.deb
+
+# 3. what the trim would remove, then remove it, then reboot
+sudo liuqin-root-trim --dry-run
+sudo liuqin-root-trim
+```
+
+`tools/deploy-liuqin-boot.py` does step 1 with a read-back comparison, the
+read-only flags of the partition and its disk restored on every exit path, and
+the live `boot_a` saved under `backups/` first. Prefer it to the `dd` above.
+
+Rebuilding the two pieces yourself:
+
+```sh
+python3 tools/build-liuqin-kernel.py --source ../linux-sm8450-liuqin --out out/kernel
+python3 tools/build-liuqin-memory-tweaks.py --kernel-out out/kernel
+```
+
+It refuses an existing output directory, so a rebuild needs
+`rm -rf out/memory-tweaks` first, or `--out` pointing somewhere fresh. The
+result is reproducible: the same kernel build and the same tree produce the
+same two hashes.
+
+### Verifying that it landed
+
+```sh
+adb -s liuqin push tests/memory-features.py /tmp/
+adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --root / --packages'
+```
+
+It reports each customisation separately and exits non-zero if any is missing.
+The same file is the image builder's `--stage features` gate, so a bundle cannot
+ship a customisation that stopped landing.
+
+### Reverting
+
+Every step is a package name plus a boot image.
+
+```sh
+sudo apt-get install snapd firefox                                    # put snap back
+sudo apt-get install fwupd cups cups-browsed modemmanager rsyslog \
+    networkd-dispatcher switcheroo-control evolution-data-server gnome-calendar
+sudo rm /etc/systemd/user/localsearch-3.service /etc/systemd/system/colord.service
+sudo rm /etc/systemd/zram-generator.conf                              # drop zram swap
+```
+
+The kernel side is not runtime-reversible: it needs a rebuild and a boot image
+flash, or the `boot_a` copy under `backups/liuqin-boot/`.
 
 ## Usage and Maintenance
 
