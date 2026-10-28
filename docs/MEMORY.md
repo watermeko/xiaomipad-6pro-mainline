@@ -121,12 +121,56 @@ Per group, the measured reasons:
 
 ## Browser after snap
 
-Ubuntu 26.04 ships `firefox` and `chromium-browser` as snap shims; with `snapd`
-purged neither can be installed from the archive. Options, in increasing order of
-effort: install a deb browser that exists in `resolute` (`epiphany-browser` is
-WebKitGTK, no snap, ~60 MB resident), add Mozilla's APT repository for a real
-`.deb` Firefox, or keep a browser out of the image and let the user choose. This
-repository does not pick one: the trim list is where that decision is made.
+Ubuntu 26.04 ships `firefox` and `chromium-browser` as snap shims, so purging
+`snapd` removes the default browser and there is no deb Firefox or Chromium in
+the archive. The measured choice on this unit, one page loaded, PSS summed over
+every process the browser spawned:
+
+| Browser | Processes | PSS, 1 page | PSS, 5 tabs | Install |
+|---|---:|---:|---:|---|
+| Google Chrome 156 (arm64 deb) | 12–15 | **421–452 MB** | **532 MB** | vendor deb, 131 MB on disk, dep closure already satisfied |
+| GNOME Web / Epiphany 49.2 (WebKitGTK) | 18 | **815 MB** (184 app + 631 in WebKit subprocesses) | not measured | `epiphany-browser`, 2 packages, 3.4 MB |
+
+Both were measured on the same session with the same page.  Chrome is smaller
+here, which is the opposite of the usual assumption, and the reason is visible
+in the per-process split: WebKitGTK starts a network process plus one
+UIProcess/web process per tab, and each one maps the full WebKit and its
+JavaScriptCore heap, so five WebKit processes cost more than four Chrome
+renderers.  Chrome's numbers are also what a user already expects from a
+Chromebook-class machine.
+
+The recommendation for this tablet is therefore **Chrome from Google's arm64
+deb**, not because it is small in the abstract but because it is the smaller of
+the two available options and it is the one whose sync the user wants:
+
+```sh
+# on the tablet, with snapd already purged
+curl -LO https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb
+sudo apt-get install -y ./google-chrome-stable_current_arm64.deb
+```
+
+`apt-get install ./file.deb` (not `dpkg -i`) resolves the dependency closure
+from the archive. On the measured unit every dependency was already present:
+`libcups2t64` stays in the tree even though `cups` is purged, because it is a
+library and not the daemon.
+
+Two things to know before relying on it:
+
+- The arm64 build is not in Google's apt repository index for `arm64`; the
+  `.deb` is published as a direct download and will not receive updates from
+  `apt upgrade`. Re-download it, or add Google's repo for `amd64` only — there
+  is no arm64 repository to subscribe to.
+- Chrome needs the ozone Wayland platform on this compositor. Launch it once
+to confirm; if it starts under Xwayland instead, set
+  `--ozone-platform=wayland` in `~/.config/chrome-flags.conf` (Ubuntu's
+  `google-chrome-stable` wrapper reads that file).
+
+If a browser is not wanted in the image at all, leave both out: the trim list
+removes `snapd` and says nothing about what to install afterwards, so the image
+ships without a browser and the user picks one.  No browser is added to a
+`[purge]` or `[keep]` section on purpose — the choice is a user decision, not a
+product one, and the two candidates differ by 2× the package count and 2× the
+memory.
 
 ## Is a non-GNOME desktop worth it?
 
@@ -193,7 +237,34 @@ Two things the hand run found that the lists alone would not have:
   `ubuntu-session` link; purging it removes all three. Only
   `evolution-data-server` itself is in the `[purge]` list.
 
+### Kernel rebuild and deployment
+
+The kernel was rebuilt and flashed, and zram is live on the tablet:
+
+| | Result |
+|---|---|
+| build | `tools/build-liuqin-kernel.py` against the pinned commit, `aarch64-linux-gnu-gcc-13`, `.config` hash `fa931ca5…` matching the lock |
+| module set | 481 modules, exactly the set the running system has; only the build-id bytes differ |
+| release | `6.17.0-rc1-gfe81794b5e1b`, unchanged, so the root filesystem still matches |
+| deploy | `tools/deploy-liuqin-boot.py`: the device-tested bundle's ramdisk and DTB, kernel replaced, written to `boot_a` whole, read back and compared |
+| `/sys/block/zram0` | present, 3221225472 bytes (3 GiB), `comp_algorithm` = `[zstd]`, swap priority 100 |
+| reclaim | a Python process allocating 6720 MiB of anonymous memory (more than `MemTotal`) ran to completion; `zram0` held 320 MB of swap at a 19.24:1 compression ratio and the session stayed alive |
+| `systemd-oomd` | active, and now has something to reclaim instead of only something to kill |
+
 The configuration replay and the `.config` diff for the kernel were reproduced
 on the development host. The post-trim figures above are measurements of a
 hand-applied trim on the installed 0.6.0 root, not of a rebuilt image; the zram
-path is unproven until the kernel is rebuilt and flashed.
+figures are from the rebuilt and flashed kernel.
+
+Deploying again, after any kernel change:
+
+```sh
+python3 tools/build-liuqin-kernel.py --source ../linux-sm8450-liuqin --out out/kernel
+python3 tools/deploy-liuqin-boot.py --kernel-out out/kernel --dry-run   # build + verify only
+python3 tools/deploy-liuqin-boot.py --kernel-out out/kernel             # write, verify, reboot
+```
+
+`deploy-liuqin-boot.py` saves the live `boot_a` under `backups/liuqin-boot/`
+before writing and refuses to run when the kernel build does not match
+`kernel/source.json`. It writes nothing but `boot_a`: `boot_b` keeps the
+bootloader's fallback copy, which is the way back if an image does not load.

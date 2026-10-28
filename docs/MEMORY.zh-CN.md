@@ -70,12 +70,14 @@ NVIDIA/AMD/Intel/Mellanox/QLogic `linux-firmware-*`，另有 820 MB 是 LibreOff
 记录链接目标，native-root 构建器还会在组装后的树里断言这些屏蔽和
 `zram-generator.conf` 都在。
 
-## 8 GB 机器上的预期
+## 8 GB 机器上的结果
+
+以下是手工施加清单后的实测，完整数据见「验证状态」。
 
 | 之后 | 空闲 | 变化 |
 |---|---:|---:|
-| 仅裁剪 | ~1.7 GB | 常驻 −580 MB |
-| 裁剪 + zram | ~1.7 GB + 3 GiB 压缩 swap | 浏览器量级的分配不再触发 OOM |
+| 仅裁剪 | 总 PSS 1406 MB | 常驻 −680 MB（开着一个登录会话：2267 → 1406） |
+| 裁剪 + zram | 同上，另加 3 GiB 压缩 swap | 浏览器量级的分配不再触发 OOM |
 
 逐项理由（均为实测）：
 
@@ -100,11 +102,44 @@ NVIDIA/AMD/Intel/Mellanox/QLogic `linux-firmware-*`，另有 820 MB 是 LibreOff
 
 ## snap 删掉之后的浏览器
 
-26.04 的 `firefox` 和 `chromium-browser` 都是 snap 转接包，`snapd` 一旦删掉，
-软件源里就没有可装的浏览器了。按代价从小到大：装 `resolute` 里真实存在的 deb 浏览器
-（`epiphany-browser` 是 WebKitGTK，无 snap，常驻约 60 MB）、或加 Mozilla 官方 APT 源
-装真 `.deb` Firefox、或干脆不带浏览器让用户自己选。本仓库不替用户做这个决定——决定点
-就在裁剪清单里。
+26.04 的 `firefox` 和 `chromium-browser` 都是 snap 转接包，所以删掉 `snapd` 就等于
+删掉默认浏览器，而软件源里没有 deb 版 Firefox 或 Chromium。这台机器上实测（加载一个
+页面，把所有子进程的 PSS 相加）：
+
+| 浏览器 | 进程数 | 1 个页面 | 5 个标签 | 安装 |
+|---|---:|---:|---:|---|
+| Chrome 156（arm64 deb） | 12–15 | **421–452 MB** | **532 MB** | 厂商 deb，磁盘 131 MB，依赖已满足 |
+| GNOME Web / Epiphany 49.2（WebKitGTK） | 18 | **815 MB**（应用 184 + WebKit 子进程 631） | 未测 | `epiphany-browser`，2 个包，3.4 MB |
+
+两者在同一个会话、同一个页面下测得。**Chrome 反而更小**，这和通常的直觉相反，原因
+看每进程拆分就清楚：WebKitGTK 会起一个网络进程加每个页面一个 WebContent 进程，每个
+都映射整份 WebKit 和 JavaScriptCore 堆，所以 5 个 WebKit 进程比 4 个 Chrome 渲染进程
+更贵。
+
+所以这台平板的建议是 **装 Google 的 arm64 deb 版 Chrome**——不是因为它抽象意义上
+“轻”，而是因为它是「现有两个选项里更小的那个」，同时正好满足你要的同步：
+
+```sh
+# 在平板上，此时 snapd 已经删掉
+curl -LO https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb
+sudo apt-get install -y ./google-chrome-stable_current_arm64.deb
+```
+
+用 `apt-get install ./file.deb`（而不是 `dpkg -i`），这样依赖会从软件源解析。实测那台
+机器的依赖已全部满足：`cups` 守护进程被删了，但 `libcups2t64` 这个库还在，因为它是库
+不是守护进程。
+
+依赖它之前要知道两件事：
+
+- Google 的 arm64 包**不在**它的 apt 仓库索引里，是直链下载，因此不会随 `apt upgrade`
+  更新。要更新就重新下载；Google 的仓库只提供 amd64。
+- 在这个合成器上 Chrome 需要走 ozone Wayland 后端。先启动一次确认；如果它跑在
+  Xwayland 里，就在 `~/.config/chrome-flags.conf` 加 `--ozone-platform=wayland`
+  （Ubuntu 的 `google-chrome-stable` 包装脚本会读这个文件）。
+
+如果干脆不想在镜像里带浏览器，那就两个都不要装：裁剪清单只负责删 `snapd`，不规定之后
+装什么，镜像就是不带浏览器，由用户自选。我**刻意没有**把任何浏览器写进 `[purge]` 或
+`[keep]`——这是用户决定而不是产品决定，何况两个候选差了一倍包数和一倍内存。
 
 ## 换掉 GNOME 值不值
 
@@ -161,6 +196,31 @@ xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进
   `gnome-shell`、`gdm3`、`ubuntu-session` 都链接它；删包会连带删掉这三个。
   `[purge]` 里只留 `evolution-data-server` 本身。
 
+### 内核重编与部署
+
+内核已经重编并刷入，zram 在真机上就是活的：
+
+| | 结果 |
+|---|---|
+| 构建 | `tools/build-liuqin-kernel.py` 对齐锁定 commit，`aarch64-linux-gnu-gcc-13`，`.config` 哈希 `fa931ca5…` 与锁一致 |
+| 模块集 | 481 个模块，与运行系统完全一致，只有 build-id 字节不同 |
+| release | 仍是 `6.17.0-rc1-gfe81794b5e1b`，所以 rootfs 与内核仍然匹配 |
+| 部署 | `tools/deploy-liuqin-boot.py`：复用设备已验证 bundle 的 ramdisk 与 DTB，只替换内核，整分区写入后回读比对 |
+| `/sys/block/zram0` | 存在，3221225472 字节（3 GiB），`comp_algorithm` = `[zstd]`，swap 优先级 100 |
+| 回收 | 一个 Python 进程分配 6720 MiB 匿名内存（超过 `MemTotal`）并正常跑完；`zram0` 里 320 MB swap、压缩比 19.24:1，会话没有被杀 |
+| `systemd-oomd` | active，而且现在有可回收的东西，不再只剩「杀」这一种手段 |
+
 内核侧的配置重放与 `.config` 差异已在开发机上复现。上面的裁剪后数据是「在已安装的
-0.6.0 root 上手工裁剪」的实测，不是重出镜像的验收；zram 这条路在内核重编并刷机之前
-未经验证。
+0.6.0 root 上手工裁剪」的实测，不是重出镜像的验收；zram 的数据来自重编并刷入的内核。
+
+以后任何内核改动，重新部署：
+
+```sh
+python3 tools/build-liuqin-kernel.py --source ../linux-sm8450-liuqin --out out/kernel
+python3 tools/deploy-liuqin-boot.py --kernel-out out/kernel --dry-run   # 只构建并校验
+python3 tools/deploy-liuqin-boot.py --kernel-out out/kernel             # 写入、校验、重启
+```
+
+`deploy-liuqin-boot.py` 在写入前会把现行 `boot_a` 存到 `backups/liuqin-boot/`；当内核构建
+与 `kernel/source.json` 不匹配时它会拒绝执行。它只写 `boot_a`：`boot_b` 保留引导程序的
+回退副本，那是镜像加载失败时的退路。
