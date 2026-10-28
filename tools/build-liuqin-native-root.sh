@@ -76,6 +76,9 @@ stage_copy() {
 	dst_caps=$(getcap "$root/usr/lib/snapd/snap-confine" 2>/dev/null | awk '{print $2}')
 	[ -n "$src_caps" ] || die 'pinned desktop rootfs lost the snap-confine capability'
 	[ "$src_caps" = "$dst_caps" ] || die 'snap-confine capability xattr did not survive the copy'
+	# Note for the debs stage: the pinned input still carries the snap stack, and
+	# this copy is what proves the xattr survived `cp -a`.  The trim then removes
+	# the whole stack, so this assertion is about the copy, not the product.
 	say 'copy PASS'
 }
 
@@ -93,6 +96,7 @@ stage_debs() {
 	say 'installing the liuqin deb set in a qemu-aarch64 chroot'
 	mkdir -p "$root/tmp/liuqin-debs"
 	cp "$debs_dir"/*.deb "$root/tmp/liuqin-debs/"
+	cp "$project_root/device/configs/liuqin-root-trim.txt" "$root/tmp/liuqin-root-trim.txt"
 	cp -L /etc/resolv.conf "$root/etc/resolv.conf.test"
 	cat >"$root/root/native-assemble.sh" <<'EOF'
 #!/bin/sh
@@ -113,7 +117,7 @@ apt-get -c /tmp/liuqin-apt.conf update >/dev/null
 # tells users to run.
 apt-get -c /tmp/liuqin-apt.conf install -y --no-install-recommends libqrtr1 libprotobuf-c1 \
 	gnome-snapshot libcamera-ipa gstreamer1.0-libcamera gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-	libcamera-tools v4l-utils >/dev/null
+	libcamera-tools v4l-utils systemd-zram-generator >/dev/null
 dpkg -i /tmp/liuqin-debs/liuqin-firmware_*_all.deb \
 	/tmp/liuqin-debs/liuqin-device-support_*_arm64.deb \
 	/tmp/liuqin-debs/liuqin-sensors_*_arm64.deb \
@@ -127,6 +131,58 @@ done
 if ls /tmp/liuqin-debs/liuqin-fingerprint_*_arm64.deb >/dev/null 2>&1; then
 	dpkg-query -W -f='${Status}\n' liuqin-fingerprint | grep -qx 'install ok installed'
 fi
+
+# --- root filesystem trim -------------------------------------------------
+# Measure, then remove: device/configs/liuqin-root-trim.txt is the reviewed
+# list and the reason for every entry.  The trim is a build gate, not a
+# suggestion -- a package that stops being removable fails here.
+trim_purge=$(awk '
+	/^\[purge\]/{f=1;next} /^\[/{f=0}
+	f && $0 !~ /^[[:space:]]*(#|$)/ {print $1}' /tmp/liuqin-root-trim.txt | tr '\n' ' ')
+trim_keep=$(awk '
+	/^\[keep\]/{f=1;next} /^\[/{f=0}
+	f && $0 !~ /^[[:space:]]*(#|$)/ {print $1}' /tmp/liuqin-root-trim.txt | tr '\n' ' ')
+[ -n "$trim_purge" ] && [ -n "$trim_keep" ] || { echo 'trim list has an empty section' >&2; exit 1; }
+set +x
+printf 'trimpurge:%s\ntrimkeep:%s\n' "$trim_purge" "$trim_keep" >/tmp/liuqin-trim.lists
+# shellcheck disable=SC2086
+apt-get -c /tmp/liuqin-apt.conf purge -y $trim_purge
+# Orphans of the purge (the EDS library stack, the snap plugin shims) own no
+# unit but still cost disk and would be reported by every later autoremove, so
+# drop them here while the list they came from is still on screen.
+apt-get -c /tmp/liuqin-apt.conf autoremove --purge -y
+# Dependency consistency after the removals, before the keep gate below.
+apt-get -c /tmp/liuqin-apt.conf check
+apt-get -c /tmp/liuqin-apt.conf clean
+rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd /root/snap
+
+read_list() { awk -v sec="$1" '
+	$0 ~ "^\\[" sec "\\]" {f=1;next} /^\[/{f=0}
+	f && $0 !~ /^[[:space:]]*(#|$)/ {print $1}' /tmp/liuqin-root-trim.txt; }
+missing=
+for pkg in $(read_list keep); do
+	dpkg-query -W -f='${Status}\n' "$pkg" 2>/dev/null | grep -qx 'install ok installed' ||
+		missing="$missing $pkg"
+done
+[ -z "$missing" ] || { echo "trim removed required packages:$missing" >&2; exit 1; }
+left=
+for pkg in $(read_list purge); do
+	if dpkg-query -W -f='${Status}\n' "$pkg" 2>/dev/null | grep -qx 'install ok installed'; then
+		left="$left $pkg"
+	fi
+done
+[ -z "$left" ] || { echo "trim did not remove:$left" >&2; exit 1; }
+# The snap stack is the one removal that has filesystem traces dpkg does not
+# own; assert them gone rather than trusting the purge.
+for leftover in /snap /var/lib/snapd /usr/lib/snapd/snap-confine; do
+	[ ! -e "$leftover" ] || { echo "snap leftover survived the trim: $leftover" >&2; exit 1; }
+done
+# systemd-zram-generator is useless without its configuration; assert both.
+dpkg -L systemd-zram-generator | grep -qx /usr/lib/systemd/system-generators/zram-generator || {
+	echo 'zram-generator ships no systemd generator' >&2; exit 1; }
+[ -f /etc/systemd/zram-generator.conf ] || { echo 'zram-generator.conf is missing' >&2; exit 1; }
+set -x
+dpkg --audit
 EOF
 	chmod 0755 "$root/root/native-assemble.sh"
 	mkdir -p "$apt_cache/lists" "$apt_cache/archives" \
@@ -143,6 +199,7 @@ EOF
 	trap - EXIT
 	rm -f "$root/root/native-assemble.sh" "$root/etc/resolv.conf.test" \
 		"$root/tmp/liuqin-apt.conf" "$root/usr/sbin/policy-rc.d"
+	rm -f "$root/tmp/liuqin-root-trim.txt" "$root/tmp/liuqin-trim.lists"
 	rm -rf "$root/tmp/liuqin-debs"
 	# cp -L inside the chroot wrote through the distro resolver symlink into the
 	# run/ stub; restore the pinned empty placeholder and assert the symlink
@@ -212,6 +269,34 @@ END {
 	[ ! -e "$root/etc/systemd/system/basic.target.requires/liuqin-snap-root-admission.service" ] ||
 		die 'snap admission must not be required by basic.target in the native root'
 
+	# --- memory policy (zram + the masked daemons) ---------------------------
+	# These files arrive through liuqin-device-support, i.e. through
+	# device/gnome-overlay.  They are asserted here as well because the overlay
+	# copy loop once walked regular files only and dropped every mask link
+	# silently: the tree in git said "masked", the installed system ran the
+	# daemon.  A missing mask is now a build failure, not a measurement.
+	[ -f "$root/etc/systemd/zram-generator.conf" ] ||
+		die 'the overlay zram-generator configuration did not land'
+	grep -qx 'zram-size = min(ram / 2, 3072)' "$root/etc/systemd/zram-generator.conf" ||
+		die 'zram-generator.conf drifted from the reviewed sizing'
+	grep -qx 'compression-algorithm = zstd' "$root/etc/systemd/zram-generator.conf" ||
+		die 'zram-generator.conf no longer selects the kernel default compressor'
+	for mask in \
+		etc/systemd/system/apt-daily.timer \
+		etc/systemd/system/apt-daily-upgrade.timer \
+		etc/systemd/system/update-notifier-download.timer \
+		etc/systemd/system/unattended-upgrades.service \
+		etc/systemd/system/colord.service \
+		etc/systemd/user/localsearch-3.service; do
+		[ -L "$root/$mask" ] && [ "$(readlink "$root/$mask")" = /dev/null ] ||
+			die "overlay mask did not land: /$mask"
+	done
+	# The trim owns the removal; this catches a skipped debs stage.
+	[ ! -e "$root/usr/lib/snapd/snap-confine" ] ||
+		die 'the snap stack is still in the tree; run the debs stage (trim)'
+	[ ! -d "$root/snap" ] && [ ! -d "$root/var/lib/snapd" ] ||
+		die 'snap state directories survived the trim'
+
 	# --- marker ---------------------------------------------------------------
 	printf 'liuqin-native-root-v1\n' >"$root/etc/liuqin-native-root"
 	chown 0:0 "$root/etc/liuqin-native-root"
@@ -252,6 +337,7 @@ END {
 		/usr/libexec/iio-sensor-proxy \
 		/usr/local/sbin/liuqin-gnome-storage-guard \
 		/usr/local/sbin/liuqin-gnome-usb-rescue \
+		/usr/local/sbin/liuqin-root-trim \
 		/usr/local/libexec/liuqin-power-keyd \
 		/usr/local/libexec/liuqin-power-key-action \
 		/usr/local/sbin/liuqin-bt-public-addr \
@@ -280,7 +366,9 @@ END {
 		/usr/lib/firmware/qcom/sm8450/Xiaomi-Pad-6-Pro-tplg.bin \
 		/usr/lib/firmware/updates/qcom/a730_sqe.fw \
 		/usr/lib/firmware/updates/qcom/gmu_gen70000.bin \
-		/usr/share/qcom/sm8450/Xiaomi/liuqin/sensors/sns_reg_version; do
+		/usr/share/qcom/sm8450/Xiaomi/liuqin/sensors/sns_reg_version \
+		/usr/share/liuqin/root-trim.txt \
+		/etc/systemd/zram-generator.conf; do
 		[ "$(stat -c '%a' "$root$regular" 2>/dev/null || true)" = 644 ] ||
 			preflight_fail "regular file mode is not 644: $regular"
 	done
@@ -358,8 +446,16 @@ PYEOF
 
 stage_pack() {
 	[ -f "$out_dir/native-root.identity" ] || die 'run the manifest stage first'
-	[ -n "$(getcap "$root/usr/lib/snapd/snap-confine" 2>/dev/null)" ] ||
-		die 'root tree has lost the snap-confine capability'
+	# The trim removes the snap stack; the capability assertion follows the
+	# product, so a tree that still ships snapd must still carry snap-confine's
+	# xattr and a tree that purged snapd must not carry /usr/lib/snapd at all.
+	if [ -d "$root/usr/lib/snapd" ]; then
+		[ -n "$(getcap "$root/usr/lib/snapd/snap-confine" 2>/dev/null)" ] ||
+			die 'root tree has lost the snap-confine capability'
+	else
+		[ ! -e "$root/usr/lib/snapd/snap-confine" ] ||
+			die 'snap-confine survived the trim outside /usr/lib/snapd'
+	fi
 	sh "$project_root/tools/lib/rootfs-archive.sh" pack "$root" "$out_dir/rootfs.tar.gz"
 	(cd "$out_dir" && sha256sum rootfs.tar.gz >rootfs.tar.gz.sha256)
 	say 'archive prepared; this is not an installation or release verdict'
