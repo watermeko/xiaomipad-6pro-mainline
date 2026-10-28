@@ -81,12 +81,15 @@ timers kept running while git claimed they were masked. The loop now enumerates
 files *and* symlinks, records the target, and the native-root builder asserts the
 masks and `zram-generator.conf` in the assembled tree.
 
-## Expected result on the 8 GB unit
+## Result on the 8 GB unit
+
+Measured after applying the list by hand; the verification section has the full
+numbers.
 
 | After | Idle | Change |
 |---|---:|---:|
-| trim only | ~1.7 GB | −580 MB resident |
-| trim + zram | ~1.7 GB + 3 GiB compressed swap | a browser-sized allocation no longer OOMs |
+| trim only | 1406 MB total PSS | −680 MB resident (2267 → 1406 with a login session up) |
+| trim + zram | the above, plus 3 GiB of compressed swap | a browser-sized allocation stops triggering OOM |
 
 Per group, the measured reasons:
 
@@ -160,9 +163,37 @@ still trims, and `/usr/local/sbin/liuqin-root-trim` reports that
 
 ## Verification status
 
-- Configuration replay and the `.config` diff: reproduced on the host, see above.
-- The trim list was checked on the device with `apt-get -s purge` per package and
-  as a set; `liuqin-root-trim --dry-run` parses the shipped list on the tablet.
-- Resident-memory numbers are from the running 0.6.0 root filesystem; the
-  post-trim figures are the arithmetic of the measured group PSS and are not yet
-  an acceptance measurement of a trimmed image.
+Measured on the tablet, 8 GB SKU, after the trim was applied by hand
+(`liuqin-root-trim` plus the four sensor libraries below), booted into a user
+session, no applications open, ~2 minutes of uptime:
+
+| | before | after |
+|---|---:|---:|
+| total PSS | 2267 MB (with Settings + terminal open) / 1420 MB (idle greeter) | 1406 MB |
+| `MemTotal` free-ish (`free -m` available) | 4625 MB | 4348 MB, with 2 GiB more in `buff/cache` after the same uptime |
+| running services | 42 system + 55 user | 25 system + 31 user |
+| swap | none, `CONFIG_ZRAM` off | `systemd-zram-generator` generates `dev-zram0.swap`; the device cannot back it until the kernel is rebuilt |
+
+Groups after the trim: GNOME shell and session 553 MB, `gsd-*` 199 MB, ibus
+99 MB, xdg portals 97 MB, gvfs 94 MB, audio 69 MB, evolution 29 MB,
+removable daemons 7 MB.
+
+Two things the hand run found that the lists alone would not have:
+
+- **`liuqin-sensors` was under-declaring its libraries.** `ssccli` and the
+  SSC-enabled `iio-sensor-proxy` link `libqmi-glib5` and `libqrtr-glib0`, which
+  used to arrive as leftovers of `modemmanager` and `fwupd`. Purging those two
+  packages left both binaries exiting 127, the accelerometer gate failing
+  closed, `iio-sensor-proxy` never starting, auto-rotation gone and the
+  fingerprint startup gate failing behind it. Fixed in
+  `tools/build-liuqin-debs.sh` (Depends plus an `ldd` closure gate) and in the
+  `[keep]` section of the trim list.
+- **`evolution-data-server-common` is not removable.** It ships the
+  `libedataserver` client libraries that `gnome-shell`, `gdm3` and
+  `ubuntu-session` link; purging it removes all three. Only
+  `evolution-data-server` itself is in the `[purge]` list.
+
+The configuration replay and the `.config` diff for the kernel were reproduced
+on the development host. The post-trim figures above are measurements of a
+hand-applied trim on the installed 0.6.0 root, not of a rebuilt image; the zram
+path is unproven until the kernel is rebuilt and flashed.

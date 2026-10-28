@@ -40,6 +40,19 @@ keep=$(read_section keep)
 
 installed() { dpkg-query -W -f='${Status}\n' "$1" 2>/dev/null | grep -qx 'install ok installed'; }
 
+# Units whose package has to stay but whose daemon must not run.  Same mask set
+# as device/gnome-overlay/etc/systemd; keeping it here means a tablet that was
+# installed before the overlay learned to ship its symlinks can repair itself.
+#   colord      purging it removes gnome-control-center
+#   localsearch nautilus Depends it, so only the indexer is masked
+#   the rest    update notifiers whose parent packages are purged here
+masks='etc/systemd/system/apt-daily.timer
+etc/systemd/system/apt-daily-upgrade.timer
+etc/systemd/system/update-notifier-download.timer
+etc/systemd/system/unattended-upgrades.service
+etc/systemd/system/colord.service
+etc/systemd/user/localsearch-3.service'
+
 echo "packages the trim removes:"
 for pkg in $purge; do
 	installed "$pkg" && printf '  %s\n' "$pkg"
@@ -68,13 +81,22 @@ for pkg in $keep; do
 done
 [ -z "$missing" ] || { printf 'the trim removed required packages:%s\n' "$missing" >&2; exit 1; }
 
+# Masks last: the daemons they cover may still have been running above.
+for unit in $masks; do
+	mkdir -p "/${unit%/*}"
+	ln -sfn /dev/null "/$unit"
+done
+systemctl daemon-reload || :
+for unit in $(printf '%s\n' "$masks" | grep -v 'systemd/user/' | xargs -n1 basename); do
+	systemctl stop "$unit" 2>/dev/null || :
+done
+
 left=
 for pkg in $purge; do
 	installed "$pkg" && left="$left $pkg"
 done
 [ -z "$left" ] || { printf 'these packages are still installed:%s\n' "$left" >&2; exit 1; }
 
-systemctl daemon-reload || :
 command -v dconf >/dev/null && dconf update || :
 if [ -e /sys/block/zram0 ]; then
 	echo 'zram: /sys/block/zram0 is present (see zramctl)'

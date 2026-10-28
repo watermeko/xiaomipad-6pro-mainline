@@ -136,8 +136,31 @@ sudo rm /etc/systemd/user/localsearch-3.service   # 解除对索引器的屏蔽
 
 ## 验证状态
 
-- 配置重放与 `.config` 差异：已在开发机上复现，见上文。
-- 裁剪清单在设备上按单包、按整组用 `apt-get -s purge` 核对过；
-  `liuqin-root-trim --dry-run` 能在平板上解析安装包内附的清单。
-- 常驻内存数字来自正在运行的 0.6.0 rootfs；裁剪后的数字是各分组实测 PSS 的算术结果，
-  还不是裁剪镜像的验收测量。
+以下数据来自平板实测（8 GB 版本）。裁剪是手工施加的（`liuqin-root-trim` 加上下面提到的
+四个传感器库），重启进入用户会话、不开任何应用、开机约 2 分钟：
+
+| | 裁剪前 | 裁剪后 |
+|---|---:|---:|
+| 总 PSS | 2267 MB（开了设置和终端）/ 空闲登录界面 1420 MB | 1406 MB |
+| `free -m` available | 4625 MB | 4348 MB，同时相同运行时长下 `buff/cache` 多了约 2 GiB |
+| 运行中的服务 | 42 个系统 + 55 个用户 | 25 个系统 + 31 个用户 |
+| swap | 无，`CONFIG_ZRAM` 关闭 | `systemd-zram-generator` 能生成 `dev-zram0.swap`；内核重编前设备建不出来 |
+
+裁剪后的分组：GNOME shell 与会话 553 MB、`gsd-*` 199 MB、ibus 99 MB、
+xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进程 7 MB。
+
+手工跑一遍才发现两个清单本身看不出来的问题：
+
+- **`liuqin-sensors` 少声明了依赖库。** `ssccli` 和 SSC 版 `iio-sensor-proxy` 还链接
+  `libqmi-glib5` 与 `libqrtr-glib0`，这两个库此前只是作为 `modemmanager`/`fwupd`
+  的残留存在。把这两个包删掉之后，两个二进制都 exit 127，加速度计采样闸门 fail-closed，
+  `iio-sensor-proxy` 再也起不来，自动旋转消失、指纹启动闸门跟着失败。已在
+  `tools/build-liuqin-debs.sh` 修正（Depends 加上 `ldd` 完备性闸门），并把四个库写进
+  裁剪清单的 `[keep]`。
+- **`evolution-data-server-common` 不能删。** `libedataserver` 客户端库在这个包里，
+  `gnome-shell`、`gdm3`、`ubuntu-session` 都链接它；删包会连带删掉这三个。
+  `[purge]` 里只留 `evolution-data-server` 本身。
+
+内核侧的配置重放与 `.config` 差异已在开发机上复现。上面的裁剪后数据是「在已安装的
+0.6.0 root 上手工裁剪」的实测，不是重出镜像的验收；zram 这条路在内核重编并刷机之前
+未经验证。
