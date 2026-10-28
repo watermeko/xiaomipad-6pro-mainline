@@ -1,0 +1,84 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Apply device/configs/liuqin-root-trim.txt to a running system.
+#
+# The same list is applied at image build time by the `debs` stage of
+# tools/build-liuqin-native-root.sh; this front end exists so an installed
+# tablet can be trimmed without reflashing the root filesystem.  It removes
+# packages, not files: every decision here is a package name in the shipped
+# list, so `apt-get install` puts a component back.
+#
+# Usage: liuqin-root-trim [--dry-run] [--yes]
+set -eu
+
+list=/usr/share/liuqin/root-trim.txt
+dry_run=0
+assume_yes=0
+for arg in "$@"; do
+	case $arg in
+	--dry-run) dry_run=1 ;;
+	--yes | -y) assume_yes=1 ;;
+	*) printf 'usage: %s [--dry-run] [--yes]\n' "${0##*/}" >&2; exit 2 ;;
+	esac
+done
+
+[ "$(id -u)" = 0 ] || { printf 'root is required\n' >&2; exit 1; }
+[ -f "$list" ] || { printf 'trim list is missing: %s\n' "$list" >&2; exit 1; }
+
+read_section() { # read_section purge|keep -> one package name per line
+	awk -v want="$1" '
+		$0 ~ "^\\[" want "\\]$" { in_section = 1; next }
+		/^\[/ { in_section = 0 }
+		in_section && $0 !~ /^[[:space:]]*(#|$)/ { print $1 }
+	' "$list"
+}
+
+purge=$(read_section purge)
+keep=$(read_section keep)
+[ -n "$purge" ] && [ -n "$keep" ] || { printf 'trim list has an empty section\n' >&2; exit 1; }
+
+installed() { dpkg-query -W -f='${Status}\n' "$1" 2>/dev/null | grep -qx 'install ok installed'; }
+
+echo "packages the trim removes:"
+for pkg in $purge; do
+	installed "$pkg" && printf '  %s\n' "$pkg"
+done
+
+if [ "$dry_run" = 1 ]; then
+	echo 'dry run: no package was removed'
+	exit 0
+fi
+if [ "$assume_yes" != 1 ]; then
+	printf 'Apply the trim now? [y/N] '
+	read -r answer || answer=n
+	case $answer in y|Y|yes|YES) ;; *) echo 'aborted'; exit 1 ;; esac
+fi
+
+# shellcheck disable=SC2086
+apt-get purge -y $purge
+apt-get autoremove --purge -y
+apt-get clean
+# dpkg does not own these paths, so a purge leaves them behind.
+rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd /root/snap
+
+missing=
+for pkg in $keep; do
+	installed "$pkg" || missing="$missing $pkg"
+done
+[ -z "$missing" ] || { printf 'the trim removed required packages:%s\n' "$missing" >&2; exit 1; }
+
+left=
+for pkg in $purge; do
+	installed "$pkg" && left="$left $pkg"
+done
+[ -z "$left" ] || { printf 'these packages are still installed:%s\n' "$left" >&2; exit 1; }
+
+systemctl daemon-reload || :
+command -v dconf >/dev/null && dconf update || :
+if [ -e /sys/block/zram0 ]; then
+	echo 'zram: /sys/block/zram0 is present (see zramctl)'
+else
+	echo 'zram: no /sys/block/zram0; the kernel needs rebuilding from kernel/source.json'
+fi
+echo 'trim applied; reboot to drop the services that were purged'

@@ -203,16 +203,36 @@ PY
 	# firmware path owned by liuqin-firmware, and the autologin gdm3 override
 	# (native install keeps the distro custom.conf so first boot runs
 	# gnome-initial-setup; see the header comment).
-	(cd "$overlay" && find . -mindepth 1 -type f \
-		! -name README.md ! -path '*/__pycache__/*' ! -path './usr/lib/firmware/*' \
-		! -path './etc/gdm3/custom.conf' \
-		-printf '%P\n' | LC_ALL=C sort) >"$work/$pkg.files"
-	while IFS= read -r rel; do
+	#
+	# Symlinks are part of the overlay contract, not an accident: the masking
+	# units under etc/systemd/system are symlinks to /dev/null, and a copy loop
+	# that only walked regular files shipped the unit *unmasked* while the tree
+	# in git said otherwise.  Enumerate both kinds and record the link target so
+	# the packaged tree can be checked against the overlay.
+	(cd "$overlay" && {
+		find . -mindepth 1 -type f \
+			! -name README.md ! -path '*/__pycache__/*' ! -path './usr/lib/firmware/*' \
+			! -path './etc/gdm3/custom.conf' -printf 'f %P\n'
+		find . -mindepth 1 -type l \
+			! -path './usr/lib/firmware/*' -printf 'l %P\n'
+	} | LC_ALL=C sort -k2) >"$work/$pkg.files"
+	while read -r kind rel; do
 		[ -n "$rel" ] || continue
+		if [ "$kind" = l ]; then
+			target=$(readlink "$overlay/$rel")
+			[ -n "$target" ] || die "overlay symlink has no target: $rel"
+			install -d -m 0755 "$(dirname "$root/$rel")"
+			ln -sfn "$target" "$root/$rel"
+			[ "$(readlink "$root/$rel")" = "$target" ] ||
+				die "overlay symlink did not land: $rel -> $target"
+			continue
+		fi
 		mode=$(stat -c '%a' "$overlay/$rel")
 		case $mode in 6??) mode=644 ;; 7??) mode=755 ;; esac
 		install -D -m "$mode" "$overlay/$rel" "$root/$rel"
 	done <"$work/$pkg.files"
+	[ "$(grep -c '^l ' "$work/$pkg.files")" -ge 6 ] ||
+		die 'the overlay mask links did not make it into the package file list'
 	[ "$(wc -l <"$work/$pkg.files" | tr -d ' ')" -ge 30 ] ||
 		die 'device-support overlay copy is implausibly small'
 	# Adapt the shared storage guard to the native root marker.
@@ -283,6 +303,16 @@ PY
 		sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')" = AArch64 ] ||
 		die 'power-key daemon is not an AArch64 executable'
 	install -D -m 0755 "$busybox" "$root/usr/local/bin/busybox"
+	# The trim list is shipped verbatim so /usr/local/sbin/liuqin-root-trim on an
+	# installed tablet applies exactly what the image builder applied, instead of
+	# a second copy of the policy that can drift.
+	trim_list=$project_root/device/configs/liuqin-root-trim.txt
+	[ -f "$trim_list" ] && [ ! -L "$trim_list" ] || die 'the root trim list is unavailable'
+	grep -qx '\[purge\]' "$trim_list" && grep -qx '\[keep\]' "$trim_list" ||
+		die 'the root trim list lost one of its sections'
+	install -D -m 0644 "$trim_list" "$root/usr/share/liuqin/root-trim.txt"
+	cmp -s "$trim_list" "$root/usr/share/liuqin/root-trim.txt" ||
+		die 'the shipped trim list differs from device/configs/liuqin-root-trim.txt'
 	if [ -f "$overlay/usr/share/liuqin/power/io.github.liuqin.power.gschema.xml" ]; then
 		install -D -m 0755 "$power_settings_binary" "$root/usr/bin/gnome-control-center"
 		command -v glib-compile-schemas >/dev/null || die 'glib-compile-schemas is required'

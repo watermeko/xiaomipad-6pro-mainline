@@ -1,0 +1,94 @@
+# Root filesystem trim for the liuqin native root (Ubuntu 26.04 + GNOME).
+#
+# Read by the `debs` stage of tools/build-liuqin-native-root.sh after the liuqin
+# .deb set is installed, inside the same ARM64 chroot.  The stage purges every
+# `[purge]` package, autoremoves what that orphaned, and then fails the build
+# unless every `[keep]` package is still installed and every `[purge]` package
+# (plus its D-Bus names) is really gone.  A trim that silently costs the
+# desktop therefore breaks the build instead of the panel.
+#
+# Everything here is measured on the 8 GiB unit: see docs/MEMORY.md.
+#
+# `[purge]` entries are package names only.  `[keep]` entries are the runtime
+# the desktop, the sensors, the audio path and the fingerprint login need; they
+# exist so that a dependency change in a future distro snapshot fails here.
+
+[keep]
+# Desktop session and login.  gdm3 stays: the fingerprint login and the
+# first-boot gnome-initial-setup path are wired through it.
+gdm3
+gnome-shell
+mutter-common
+ubuntu-session
+gnome-control-center
+gnome-initial-setup
+gnome-session-bin
+# Files.  nautilus Depends localsearch, so localsearch is kept installed; its
+# indexer units are masked in device/gnome-overlay instead of being purged.
+nautilus
+localsearch
+# Audio: the four speakers mix through PipeWire and its policy manager.
+pipewire
+wireplumber
+pipewire-pulse
+# Radios and network.
+network-manager
+bluez
+wpasupplicant
+# Device stack this project owns the behaviour of.
+iio-sensor-proxy
+fprintd
+libpam-fprintd
+# Camera preview and recording need these; they are image content, not
+# dependencies of liuqin-device-support.
+gnome-snapshot
+libcamera-ipa
+v4l-utils
+# Compressed swap: the rootfs ships /etc/systemd/zram-generator.conf.
+systemd-zram-generator
+# Reclaim policy: systemd-oomd is only useful with swap present.
+systemd-oomd
+
+[purge]
+# --- snap -----------------------------------------------------------------
+# The whole snap stack, including the transitional `firefox` and `thunderbird`
+# packages (in 26.04 both are snap shims that pull snapd as a dependency).
+# Measured 150 MB RSS for snapd + snap userd + snapd-desktop-integration.
+snapd
+firefox
+thunderbird
+# --- package management churn --------------------------------------------
+# Both were already masked in device/gnome-overlay; purging removes the
+# interpreter that stayed resident (unattended-upgrade-shutdown ~23 MB,
+# update-notifier ~28 MB) instead of only disabling its timer.
+unattended-upgrades
+update-notifier
+# --- firmware / printing / telephony -------------------------------------
+# fwupd: the board has no updatable firmware capsule this product supports.
+fwupd
+# Printing: no printer driver has evidence on this device.
+cups
+cups-browsed
+# ipp-usb and its mDNS discovery daemon exist only to publish a USB printer.
+ipp-usb
+avahi-daemon
+# There is no WWAN modem on the tablet; ModemManager only polls for one.
+modemmanager
+# --- logging and policy shims --------------------------------------------
+# journald already carries the boot log; rsyslog writes the same lines twice.
+rsyslog
+# networkd-dispatcher only reacts to systemd-networkd; this root runs
+# NetworkManager.
+networkd-dispatcher
+# One GPU.  switcheroo-control exists to offer a dGPU launcher.
+switcheroo-control
+# --- GNOME data services --------------------------------------------------
+# Calendar, contacts, the alarm daemon and the EDS registries.  gnome-shell
+# only Recommends evolution-data-server, so this costs the calendar dropdown
+# and the address book, not the shell.  Measured 244 MB RSS as a group.
+evolution-data-server
+gnome-calendar
+# Initial-setup accounts page pulls in an online-accounts wizard that talks to
+# EDS; gnome-online-accounts itself stays (it is a gnome-control-center
+# dependency), only the calendar/contact backends go.
+evolution-data-server-common
