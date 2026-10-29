@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""liuqin-tap - ask liuqin-tapd to tap the touchscreen at logical coordinates.
+
+    sudo liuqin-tapd &          # keeps one touchscreen device alive
+    liuqin-tap 433 831
+
+See liuqin-tapd for why the device has to persist instead of being created per
+tap.
+"""
+
+import errno
+import os
+import sys
+
+FIFO = os.environ.get("LIUQIN_TAP_FIFO", "/run/liuqin-tap.fifo")
+
+
+def main(argv):
+    if len(argv) != 3:
+        print("usage: liuqin-tap <x> <y>", file=sys.stderr)
+        print("(is liuqin-tapd running?)", file=sys.stderr)
+        return 2
+
+    try:
+        fd = os.open(FIFO, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in (errno.ENXIO, errno.ENOENT):
+            print("liuqin-tapd is not running (%s)" % FIFO, file=sys.stderr)
+            return 1
+        raise
+
+    try:
+        os.write(fd, ("%s %s\n" % (argv[1], argv[2])).encode())
+    finally:
+        os.close(fd)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

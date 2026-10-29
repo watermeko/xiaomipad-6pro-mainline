@@ -1,0 +1,15 @@
+[Unit]
+Description=Fcitx5 input method (converts liuqin-osk key events)
+After=graphical-session.target
+
+[Service]
+# No -d: with Type=simple the daemonising parent exits and systemd then tears
+# the whole cgroup down, leaving no input method at all.
+# --replace: fcitx5 exits when it finds an existing instance, which would leave
+# the unit dead while a stray daemon keeps running.
+ExecStart=/usr/bin/fcitx5 --replace
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Authors": [{"Name": "liuqin"}],
+    "Description": "Dock the liuqin on-screen keyboard above the navigation bar and keep it on top",
+    "Id": "liuqin-osk-dock",
+    "License": "MIT",
+    "Name": "liuqin-osk dock",
+    "Version": "1.0",
+    "EnabledByDefault": true
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}

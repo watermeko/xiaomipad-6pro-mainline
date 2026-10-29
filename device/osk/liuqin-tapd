@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""liuqin-tapd - persistent touchscreen injector for UI testing.
+
+Creating and destroying a uinput touchscreen for every tap works only for the
+first few taps: after that libinput stops accepting the freshly created device
+and the taps are silently dropped, which looks exactly like a UI that ignores
+input.
+
+This keeps one touchscreen device alive for the whole session and taps on
+request.  Send coordinates to the FIFO (one "x y" pair per line), or use
+`liuqin-tap <x> <y>` which writes to it.
+
+    sudo liuqin-tapd &            # or the systemd unit
+    liuqin-tap 433 831
+
+Coordinates are logical screen pixels; LIUQIN_TAP_W/H describe the screen.
+Must run as root because /dev/uinput is root-only.
+"""
+
+import fcntl
+import os
+import struct
+import sys
+import time
+
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+UI_SET_ABSBIT = 0x40045567
+UI_SET_PROPBIT = 0x4004556E
+UI_SET_PHYS = 0x4008556C
+UI_DEV_CREATE = 0x5501
+UI_DEV_DESTROY = 0x5502
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_ABS = 0x03
+
+ABS_X = 0x00
+ABS_Y = 0x01
+ABS_MT_SLOT = 0x2F
+ABS_MT_TOUCH_MAJOR = 0x30
+ABS_MT_POSITION_X = 0x35
+ABS_MT_POSITION_Y = 0x36
+ABS_MT_TRACKING_ID = 0x39
+BTN_TOUCH = 0x14A
+
+INPUT_PROP_DIRECT = 0x01
+
+ABS_CNT = 64
+UINPUT_MAX_NAME_SIZE = 80
+ABS_RES = 4096
+
+FIFO = os.environ.get("LIUQIN_TAP_FIFO", "/run/liuqin-tap.fifo")
+WIDTH = int(os.environ.get("LIUQIN_TAP_W", "1440"))
+HEIGHT = int(os.environ.get("LIUQIN_TAP_H", "900"))
+
+
+def emit(fd, ev_type, code, value):
+    os.write(fd, struct.pack("<qqHHi", 0, 0, ev_type, code, value))
+
+
+def make_device():
+    fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_ABS)
+    fcntl.ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH)
+    fcntl.ioctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT)
+
+    # Give the virtual device the same physical path as the panel's real
+    # touchscreen so libinput groups them and maps ours to the same output;
+    # an unassociated touchscreen has no output mapping and its events are
+    # dropped by the compositor.
+    phys = os.environ.get("LIUQIN_TAP_PHYS", "input/ts").encode() + b"\0"
+    fcntl.ioctl(fd, UI_SET_PHYS, phys)
+
+    for axis in (ABS_X, ABS_Y, ABS_MT_SLOT, ABS_MT_TOUCH_MAJOR,
+                 ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID):
+        fcntl.ioctl(fd, UI_SET_ABSBIT, axis)
+
+    absmax = [0] * ABS_CNT
+    absmin = [0] * ABS_CNT
+    for axis in (ABS_X, ABS_Y, ABS_MT_POSITION_X, ABS_MT_POSITION_Y):
+        absmax[axis] = ABS_RES - 1
+    absmax[ABS_MT_SLOT] = 9
+    absmax[ABS_MT_TOUCH_MAJOR] = 255
+    absmax[ABS_MT_TRACKING_ID] = 65535
+
+    buf = b"liuqin-tapd".ljust(UINPUT_MAX_NAME_SIZE, b"\0")
+    buf += struct.pack("<HHHH", 0x1D6B, 0x1234, 0x5678, 1)
+    buf += struct.pack("<I", 0)
+    buf += struct.pack("<%di" % ABS_CNT, *absmax)
+    buf += struct.pack("<%di" % ABS_CNT, *absmin)
+    buf += struct.pack("<%di" % ABS_CNT, *([0] * ABS_CNT))
+    buf += struct.pack("<%di" % ABS_CNT, *([0] * ABS_CNT))
+    os.write(fd, buf)
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+
+def tap(fd, x, y, hold=0.06):
+    px = max(0, min(ABS_RES - 1, round(x * (ABS_RES - 1) / max(WIDTH, 1))))
+    py = max(0, min(ABS_RES - 1, round(y * (ABS_RES - 1) / max(HEIGHT, 1))))
+    emit(fd, EV_ABS, ABS_MT_SLOT, 0)
+    emit(fd, EV_ABS, ABS_MT_TRACKING_ID, 1)
+    emit(fd, EV_ABS, ABS_MT_TOUCH_MAJOR, 40)
+    emit(fd, EV_ABS, ABS_MT_POSITION_X, px)
+    emit(fd, EV_ABS, ABS_MT_POSITION_Y, py)
+    emit(fd, EV_ABS, ABS_X, px)
+    emit(fd, EV_ABS, ABS_Y, py)
+    emit(fd, EV_KEY, BTN_TOUCH, 1)
+    emit(fd, EV_SYN, 0, 0)
+    time.sleep(hold)
+    emit(fd, EV_ABS, ABS_MT_SLOT, 0)
+    emit(fd, EV_ABS, ABS_MT_TRACKING_ID, -1)
+    emit(fd, EV_KEY, BTN_TOUCH, 0)
+    emit(fd, EV_SYN, 0, 0)
+
+
+def main():
+    fd = make_device()
+    time.sleep(0.6)  # let udev and libinput notice the device
+
+    if os.path.exists(FIFO):
+        os.unlink(FIFO)
+    os.mkfifo(FIFO, 0o666)
+    print("liuqin-tapd ready on %s (%dx%d)" % (FIFO, WIDTH, HEIGHT), flush=True)
+
+    try:
+        while True:
+            with open(FIFO) as handle:
+                for line in handle:
+                    parts = line.split()
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        tap(fd, float(parts[0]), float(parts[1]))
+                    except ValueError:
+                        continue
+                    print("tap %s %s" % (parts[0], parts[1]), flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        fcntl.ioctl(fd, UI_DEV_DESTROY)
+        os.close(fd)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

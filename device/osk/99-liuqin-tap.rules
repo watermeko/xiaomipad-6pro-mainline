@@ -1,0 +1,10 @@
+# Put the UI-test touchscreen into the same libinput device group as the panel's
+# real touchscreen.  A virtual uinput device lands in its own group, gets no
+# output association, and the compositor then drops every event it emits --
+# which looks exactly like an application that ignores taps.
+#
+# The group value is "bus:phys" from the real device
+# (/sys/class/input/event6); re-read it with
+#   udevadm info /dev/input/event6 | grep LIBINPUT_DEVICE_GROUP
+# if the panel's device path ever changes.
+ACTION=="add|change", KERNEL=="event*", ATTRS{name}=="liuqin-tapd", ENV{LIBINPUT_DEVICE_GROUP}="1c/0/0:input/ts"

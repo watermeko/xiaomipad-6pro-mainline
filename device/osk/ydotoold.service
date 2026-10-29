@@ -1,0 +1,17 @@
+[Unit]
+Description=ydotool daemon (uinput key/pointer injection for liuqin-osk)
+Documentation=https://github.com/ReimuNotMoe/ydotool
+# Must exist before the graphical session starts, otherwise the compositor
+# enumerates input devices without the virtual keyboard and never sees the
+# key events the on-screen keyboard injects.
+Before=display-manager.service
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ydotoold --socket-path=/run/ydotoold.socket --socket-perm=0666
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
