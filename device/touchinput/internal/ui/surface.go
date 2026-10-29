@@ -102,6 +102,139 @@ func (u *UI) ensureSurface() error {
 		}
 	}
 
+	if u.cfg.Layer {
+		if err := u.createLayerSurface(); err != nil {
+			return err
+		}
+	} else if err := u.createToplevel(); err != nil {
+		return err
+	}
+
+	if err := u.createBuffers(); err != nil {
+		logf("createBuffers: %v", err)
+		return err
+	}
+	logf("created %d buffers", len(u.buffers))
+	// Flush and surface any error the compositor raised about the pool/buffers
+	// before we try to use them.
+	if err := u.roundtrip(); err != nil {
+		logf("roundtrip after buffers: %v", err)
+		return err
+	}
+	logf("buffers accepted by the compositor")
+
+	if os.Getenv("MYTOUCHINPUT_PROBE_ATTACH") == "1" {
+		probe, err := u.compositor.CreateSurface()
+		if err != nil {
+			return err
+		}
+		logf("probe surface id=%d", probe.ID())
+		if err := attachBuffer(probe, u.buffers[0], 0, 0); err != nil {
+			logf("probe attach: %v", err)
+			return err
+		}
+		logf("probe attach ok")
+		if err := probe.Commit(); err != nil {
+			logf("probe commit: %v", err)
+			return err
+		}
+		logf("probe commit ok")
+		if err := u.roundtrip(); err != nil {
+			logf("probe roundtrip: %v", err)
+			return err
+		}
+		logf("probe roundtrip ok -- shm attach works on a bare surface")
+		os.Exit(0)
+	}
+	u.dirty = true
+	return nil
+}
+
+// createLayerSurface makes the keyboard a wlr-layer-shell overlay surface.
+//
+// This is what the toggle button needs: the surface is not part of the window
+// stack, so Plasma Mobile cannot minimise it when it opens the app launcher or
+// the task switcher, and the overlay layer is above the panels that a window
+// rule's keepAbove never reaches.
+func (u *UI) createLayerSurface() error {
+	ls, err := u.getLayerSurface(u.surface, LayerOverlay, "mytouchinput")
+	if err != nil {
+		return err
+	}
+	u.layerSurface = ls
+	ls.handler = func(opcode uint32, payload []byte) {
+		switch opcode {
+		case layerEventConfigure:
+			if len(payload) < 12 {
+				return
+			}
+			serial := le.Uint32(payload[0:])
+			w := int(le.Uint32(payload[4:]))
+			h := int(le.Uint32(payload[8:]))
+			if err := u.layerAckConfigure(ls, serial); err != nil {
+				logf("layer ack_configure(%d): %v", serial, err)
+			}
+			u.layerConfigured = true
+			// The compositor decides the size.  It echoes what we asked for here, so
+			// this only matters before the buffers exist: afterwards a different size
+			// would need the whole shm pool rebuilt, and this surface is anchored
+			// with a fixed size, so it does not change under us.
+			if u.buffers[0] == nil && w > 0 && h > 0 && (w != u.width || h != u.height) {
+				logf("layer configure resized the keyboard %dx%d -> %dx%d",
+					u.width, u.height, w, h)
+				u.width, u.height = w, h
+				u.stride = w * u.scale * 4
+				u.canvas, u.base = nil, nil
+			}
+		case layerEventClosed:
+			logf("the compositor closed the layer surface")
+			u.layerConfigured = false
+		}
+	}
+
+	// Anchored to the bottom-right corner with an explicit size, so the surface
+	// lands exactly where the window rule used to put it, and the bottom margin
+	// keeps Plasma Mobile's navigation bar visible and tappable underneath.
+	if err := u.layerSetSize(ls, u.width, u.height); err != nil {
+		return err
+	}
+	if err := u.layerSetAnchor(ls, AnchorBottom|AnchorRight); err != nil {
+		return err
+	}
+	if err := u.layerSetMargin(ls, 0, 0, int32(u.cfg.BottomMargin), 0); err != nil {
+		return err
+	}
+	// -1: do not reserve space.  The application keeps the whole screen and the
+	// keys float above it, which is also why nothing has to be un-docked when
+	// the keyboard collapses.
+	if err := u.layerSetExclusiveZone(ls, -1); err != nil {
+		return err
+	}
+	// Never take keyboard focus: the keys are injected through uinput, so focus
+	// has to stay with the field the user is typing into.
+	if err := u.layerSetKeyboardInteractivity(ls, KeyboardInteractivityNone); err != nil {
+		return err
+	}
+
+	logf("ids: surface=%d layer_surface=%d layer_shell=%d shm=%d comp=%d seat=%d",
+		u.surface.ID(), ls.ID(), u.layerShell.ID(), u.shm.ID(), u.compositor.ID(), u.seat.ID())
+	if err := u.surface.Commit(); err != nil {
+		return err
+	}
+	for !u.layerConfigured {
+		if err := u.ctx.Dispatch(); err != nil {
+			return fmt.Errorf("waiting for the layer configure: %w", err)
+		}
+	}
+	logf("layer surface configured %dx%d margin=%d", u.width, u.height, u.cfg.BottomMargin)
+	return nil
+}
+
+// createToplevel makes the keyboard an ordinary window.  Kept as a fallback for
+// compositors without wlr-layer-shell; it cannot stay above the panels and the
+// shell minimises it with everything else.
+func (u *UI) createToplevel() error {
+	surface := u.surface
 	xdgSurface, err := u.wmBase.GetXdgSurface(surface)
 	if err != nil {
 		return err
@@ -152,44 +285,6 @@ func (u *UI) ensureSurface() error {
 			}
 		}
 	}
-
-	if err := u.createBuffers(); err != nil {
-		logf("createBuffers: %v", err)
-		return err
-	}
-	logf("created %d buffers", len(u.buffers))
-	// Flush and surface any error the compositor raised about the pool/buffers
-	// before we try to use them.
-	if err := u.roundtrip(); err != nil {
-		logf("roundtrip after buffers: %v", err)
-		return err
-	}
-	logf("buffers accepted by the compositor")
-
-	if os.Getenv("MYTOUCHINPUT_PROBE_ATTACH") == "1" {
-		probe, err := u.compositor.CreateSurface()
-		if err != nil {
-			return err
-		}
-		logf("probe surface id=%d", probe.ID())
-		if err := attachBuffer(probe, u.buffers[0], 0, 0); err != nil {
-			logf("probe attach: %v", err)
-			return err
-		}
-		logf("probe attach ok")
-		if err := probe.Commit(); err != nil {
-			logf("probe commit: %v", err)
-			return err
-		}
-		logf("probe commit ok")
-		if err := u.roundtrip(); err != nil {
-			logf("probe roundtrip: %v", err)
-			return err
-		}
-		logf("probe roundtrip ok -- shm attach works on a bare surface")
-		os.Exit(0)
-	}
-	u.dirty = true
 	return nil
 }
 

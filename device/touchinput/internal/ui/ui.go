@@ -33,14 +33,23 @@ const shmFormatARGB8888 = 0
 
 // Config describes the keyboard surface.
 type Config struct {
-	Width  int    // logical pixels, must match the KWin rule's size
+	Width  int    // logical pixels
 	Height int    // logical pixels
-	AppID  string // matched by the KWin rule
+	AppID  string // Wayland app_id, used to match the window rule in toplevel mode
 	Title  string
 	// Scale is the buffer scale: the compositor works in logical pixels, the
 	// buffer is Scale times larger so text and edges stay sharp on a HiDPI
 	// panel.  1 disables it.
 	Scale int
+	// Layer puts the keyboard on a wlr-layer-shell overlay surface instead of
+	// an ordinary window.  That is what keeps the toggle button visible and
+	// tappable: Plasma Mobile minimises every window when it opens the app
+	// launcher or the task switcher, and its panels live in a layer above
+	// anything a window can reach.
+	Layer bool
+	// BottomMargin lifts the surface off the bottom edge, so it sits above
+	// Plasma Mobile's navigation bar instead of covering it.
+	BottomMargin int
 }
 
 // Handler receives a key press from the user.
@@ -71,6 +80,11 @@ type UI struct {
 	surface    *client.Surface
 	xdgSurface *xdgshell.Surface
 	toplevel   *xdgshell.Toplevel
+	// Layer-shell objects, used instead of xdgSurface/toplevel when
+	// Config.Layer is set.
+	layerShell      *layerProxy
+	layerSurface    *layerProxy
+	layerConfigured bool
 
 	width, height int
 	stride        int
@@ -144,10 +158,16 @@ func New(cfg Config, on Handler) (*UI, error) {
 	if err := u.roundtrip(); err != nil {
 		return nil, fmt.Errorf("collecting globals: %w", err)
 	}
-	logf("roundtrip done: comp=%v shm=%v wm=%v seat=%v", u.compositor != nil, u.shm != nil, u.wmBase != nil, u.seat != nil)
-	if u.compositor == nil || u.shm == nil || u.wmBase == nil {
-		return nil, fmt.Errorf("missing globals: compositor=%v shm=%v xdg_wm_base=%v",
-			u.compositor != nil, u.shm != nil, u.wmBase != nil)
+	logf("roundtrip done: comp=%v shm=%v wm=%v seat=%v layer=%v", u.compositor != nil, u.shm != nil, u.wmBase != nil, u.seat != nil, u.layerShell != nil)
+	if u.compositor == nil || u.shm == nil {
+		return nil, fmt.Errorf("missing globals: compositor=%v shm=%v",
+			u.compositor != nil, u.shm != nil)
+	}
+	if u.cfg.Layer && u.layerShell == nil {
+		return nil, fmt.Errorf("no zwlr_layer_shell_v1 on this compositor")
+	}
+	if !u.cfg.Layer && u.wmBase == nil {
+		return nil, fmt.Errorf("no xdg_wm_base on this compositor")
 	}
 	if u.seat == nil {
 		return nil, fmt.Errorf("no wl_seat on this compositor")
@@ -195,6 +215,10 @@ func (u *UI) global(ev client.RegistryGlobalEvent) {
 		u.wmBase.SetPingHandler(func(ev xdgshell.WmBasePingEvent) {
 			u.wmBase.Pong(ev.Serial)
 		})
+	case "zwlr_layer_shell_v1":
+		if u.cfg.Layer {
+			u.bindLayerShell(ev)
+		}
 	}
 }
 

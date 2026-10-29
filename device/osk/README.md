@@ -1,5 +1,11 @@
 # liuqin-osk — touch keyboard with Chinese input
 
+**Retired.**  This directory is the GTK4 prototype that proved the approach
+(uinput + fcitx5, docked panel).  The keyboard that ships is
+`device/touchinput`; `install.sh` here now installs *that* one and keeps the
+UI-test tap tooling.  The notes below are kept because they record why the
+approach is what it is.
+
 Working. Tapping the keys types through `/dev/uinput`; fcitx5 converts to
 pinyin and the candidates appear above the search field.
 
@@ -32,22 +38,23 @@ emit real key events.
   `keyboard-us`.
 * `ydotoold.service` starts ydotoold from boot; the compositor must see the
   virtual keyboard when it enumerates input devices.
-* `kwinrulesrc` docks the window and sets `acceptfocus=false`, so tapping a key
-  never steals focus from the text field that has to receive the key events.
-* `kwin-script/liuqin-osk-dock` re-raises the keyboard (`keepAbove`) whenever a
-  window appears: a window rule cannot force `keepabove` on this compositor
-  (measured — the window stayed under application windows) while a KWin script
-  can.
 * `liuqin-osk.service` / `fcitx5.service` — systemd user units rather than XDG
   autostart, because the keyboard has to start *after* `plasma-kwin_wayland`
   and plain autostart raced it.
 
+Docking used to be a KWin window rule plus a KWin script that re-raised the
+window.  Both are gone: the shipping keyboard is a `wlr-layer-shell` overlay
+surface, which the shell neither minimises nor stacks under its panels — see
+`device/touchinput/README.md`.
+
 ## Presentation mode
 
-`LIUQIN_OSK_LAYER=0` (what the unit sets) makes the keyboard an ordinary
-toplevel.  The layer-shell variant is unusable: measured with window-local
-press logging, a `wl-layer-shell` surface receives **no** pointer or touch
-events on this compositor, with `keyboard_interactivity` `none` or `on_demand`.
+`LIUQIN_OSK_LAYER=0` (what the unit sets) made this prototype an ordinary
+toplevel, on the finding that a `wl-layer-shell` surface received **no** pointer
+or touch events here.  That finding did not reproduce when the layer-shell path
+was rebuilt for `device/touchinput`: a minimal overlay-layer surface, with or
+without acking the configure, receives `wl_touch` down events at the expected
+coordinates.  The shipping keyboard is therefore layer-shell.
 
 ## Verified
 
@@ -84,10 +91,13 @@ Synthetic taps on this panel are awkward enough that they need dedicated tools:
    `99-liuqin-tap.rules` puts it into the same `LIBINPUT_DEVICE_GROUP` as the
   real panel — without that group the compositor has no output mapping for it
   and drops every event.
-* `liuqin-tap <x> <y>` — FIFO client, in the device's rotated axis space.
-* `liuqin-stap <x> <y>` — taps at *logical screen* coordinates by undoing the
-  panel's `wl_output transform 270`:
-  `tap_x = (899 - y) / 0.623`, `tap_y = x / 1.598`.
+* `liuqin-tap <x> <y>` — FIFO client in logical screen pixels.  `liuqin-tapd`
+  undoes the panel's `wl_output transform 270` before writing to uinput
+  (`LIUQIN_TAP_ROTATE`, default 270; `0` disables it).  Measured with a
+  fullscreen probe window: a tap asked for at logical (1000,700) arrives at
+  (1000,700), where before the same tap landed at (1120,275).
+* `liuqin-stap <x> <y>` — alias kept for old notes; it now just forwards to
+  `liuqin-tap`, because the rotation lives in `liuqin-tapd`.
 * `LIUQIN_OSK_DEBUG=1` on the keyboard prints each key's allocated rectangle,
   `CLICK <name>` per handler, `PANY <x> <y>` per press, and `FCITX <args> rc=…`
   for every input-method call.
@@ -111,8 +121,6 @@ launch a competing keyboard.
 | `liuqin-osk.service` | session unit, `After=plasma-kwin_wayland.service` |
 | `fcitx5.service` | session unit for the input method |
 | `liuqin-osk.conf` | `/etc/environment.d`: `QT_IM_MODULE=fcitx` etc. |
-| `kwinrulesrc` | docks the window, `acceptfocus=false`, `enabled=true` |
-| `kwin-script/liuqin-osk-dock/` | raises the keyboard above applications |
 | `ydotoold.service` | system unit, `Before=display-manager.service` |
 | `99-liuqin-tap.rules` | puts the test touchscreen in the panel's device group |
 | `liuqin-tapd`, `liuqin-tap`, `liuqin-stap` | UI-test tap tooling |

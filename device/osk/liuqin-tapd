@@ -15,6 +15,18 @@ request.  Send coordinates to the FIFO (one "x y" pair per line), or use
 
 Coordinates are logical screen pixels; LIUQIN_TAP_W/H describe the screen.
 Must run as root because /dev/uinput is root-only.
+
+The panel is a portrait 1800x2880 panel driven with output_transform 270 degrees
+(`wayland-info`), so the compositor rotates every touch it receives before it
+becomes a screen coordinate.  A tap therefore has to be sent in the panel's own
+frame: measured with a fullscreen probe window, a tap asked for at logical
+(1000,700) arrived at (1120,275), i.e.
+
+    screen_x = py * WIDTH
+    screen_y = (1 - px) * HEIGHT
+
+for normalised px, py.  LIUQIN_TAP_ROTATE=0 disables the inverse rotation, and
+90 selects the other direction; the default 270 matches this panel.
 """
 
 import fcntl
@@ -53,6 +65,9 @@ ABS_RES = 4096
 FIFO = os.environ.get("LIUQIN_TAP_FIFO", "/run/liuqin-tap.fifo")
 WIDTH = int(os.environ.get("LIUQIN_TAP_W", "1440"))
 HEIGHT = int(os.environ.get("LIUQIN_TAP_H", "900"))
+# Output transform to undo: the panel reports touch in its portrait frame while
+# the session is landscape.  0 means the device frame already matches the screen.
+ROTATE = int(os.environ.get("LIUQIN_TAP_ROTATE", "270"))
 
 
 def emit(fd, ev_type, code, value):
@@ -97,9 +112,23 @@ def make_device():
     return fd
 
 
+def to_device(x, y):
+    """Logical screen pixels -> the touchscreen's own normalised frame."""
+    nx = x / max(WIDTH, 1)
+    ny = y / max(HEIGHT, 1)
+    if ROTATE == 270:
+        return 1.0 - ny, nx
+    if ROTATE == 90:
+        return ny, 1.0 - nx
+    if ROTATE == 180:
+        return 1.0 - nx, 1.0 - ny
+    return nx, ny
+
+
 def tap(fd, x, y, hold=0.06):
-    px = max(0, min(ABS_RES - 1, round(x * (ABS_RES - 1) / max(WIDTH, 1))))
-    py = max(0, min(ABS_RES - 1, round(y * (ABS_RES - 1) / max(HEIGHT, 1))))
+    nx, ny = to_device(x, y)
+    px = max(0, min(ABS_RES - 1, round(nx * (ABS_RES - 1))))
+    py = max(0, min(ABS_RES - 1, round(ny * (ABS_RES - 1))))
     emit(fd, EV_ABS, ABS_MT_SLOT, 0)
     emit(fd, EV_ABS, ABS_MT_TRACKING_ID, 1)
     emit(fd, EV_ABS, ABS_MT_TOUCH_MAJOR, 40)
@@ -123,7 +152,8 @@ def main():
     if os.path.exists(FIFO):
         os.unlink(FIFO)
     os.mkfifo(FIFO, 0o666)
-    print("liuqin-tapd ready on %s (%dx%d)" % (FIFO, WIDTH, HEIGHT), flush=True)
+    print("liuqin-tapd ready on %s (%dx%d, rotate=%d)"
+          % (FIFO, WIDTH, HEIGHT, ROTATE), flush=True)
 
     try:
         while True:

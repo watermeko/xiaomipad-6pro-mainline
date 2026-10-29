@@ -1,8 +1,8 @@
 #!/bin/sh
 # Install the on-screen keyboard: device/touchinput, a Go program that draws a
 # Material Design keyboard, types through uinput (so fcitx5 does the Chinese
-# conversion) and is docked at the bottom of the Plasma Mobile session by a KWin
-# window rule plus a small script.
+# conversion) and docks itself as a wlr-layer-shell overlay surface at the bottom
+# of the Plasma Mobile session.
 #
 # Run as root on the tablet.  Idempotent.
 set -eu
@@ -61,31 +61,21 @@ Layout=
 PROFILE
 chown "$USER_NAME:$USER_NAME" "$FCITX_DIR/profile"
 
-# --- dock it ---------------------------------------------------------------
-# A window rule pins the keyboard to the bottom edge above the navigation bar
-# and sets acceptfocus=false, so tapping a key never steals focus from the text
-# field the injected keys have to reach.  `enabled=true` is required, and a
-# types= key would abort the match.
+# --- retire the window-layer workarounds -----------------------------------
+# The keyboard used to be an ordinary window, docked by a window rule and raised
+# by a KWin script.  Neither can work: Plasma Mobile minimises every window when
+# it opens the app launcher or the task switcher, and its panels sit in a layer
+# above anything a window rule's keepAbove reaches.  The keyboard is a
+# wlr-layer-shell overlay surface now, so both are removed if they are still
+# around from an earlier install.
 RULES="$HOME_DIR/.config/kwinrulesrc"
-if [ ! -e "$RULES" ]; then
-    # Write in place: replacing the file gives it a new inode and KWin can miss
-    # the change, leaving the previous rules (and the wrong app id) in memory.
-    cat "$HERE/kwinrulesrc" | as_root tee "$RULES" >/dev/null
-    chown "$USER_NAME:$USER_NAME" "$RULES"
-elif ! grep -q 'org\.liuqin\.TouchInput' "$RULES"; then
-    echo "warning: $RULES already has rules; merge device/osk/kwinrulesrc by hand" >&2
+if [ -e "$RULES" ] && grep -q 'org\.liuqin\.TouchInput' "$RULES"; then
+    rm -f "$RULES"
 fi
-
-# A window rule cannot force keepAbove on this compositor (measured: the window
-# stayed below application windows), so a KWin script raises the keyboard and
-# re-raises it whenever a window appears.
 SCRIPTS="$HOME_DIR/.local/share/kwin/scripts"
-install -d -o "$USER_NAME" -g "$USER_NAME" "$SCRIPTS"
-rm -rf "$SCRIPTS/liuqin-osk-dock"
-cp -r "$KEYBOARD/kwin-script/mytouchinput-dock" "$SCRIPTS/mytouchinput-dock"
-chown -R "$USER_NAME:$USER_NAME" "$SCRIPTS"
-as_user kwriteconfig6 --file kwinrc --group Plugins \
-    --key mytouchinput-dockEnabled true
+rm -rf "$SCRIPTS/mytouchinput-dock" "$SCRIPTS/liuqin-osk-dock" "$SCRIPTS/mti-raise"
+as_user kwriteconfig6 --file kwinrc --group Plugins --key mytouchinput-dockEnabled --delete \
+    >/dev/null 2>&1 || true
 # fcitx5 has to be the compositor's input method: Chrome is a native Wayland
 # client and only uses text-input-v3, so this is what makes Chinese work there.
 as_user kwriteconfig6 --file kwinrc --group Wayland --key InputMethod \

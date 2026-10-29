@@ -28,6 +28,11 @@ func main() {
 		socket = flag.String("ydotool-socket", "/run/ydotoold.socket", "ydotoold socket")
 		dryRun = flag.Bool("dry-run", false, "log key events instead of injecting them")
 		scale  = flag.Int("scale", 2, "buffer scale: higher is sharper on a HiDPI panel")
+		// The keyboard is a wlr-layer-shell overlay surface.  -toplevel falls back
+		// to an ordinary window, which the Plasma Mobile shell minimises along
+		// with everything else when the launcher or the task switcher opens.
+		layer  = flag.Bool("layer-shell", true, "use a wlr-layer-shell overlay surface")
+		margin = flag.Int("bottom-margin", 36, "gap below the keyboard, for the navigation bar")
 	)
 	flag.Parse()
 
@@ -49,11 +54,13 @@ func main() {
 	inj := &inject.Injector{Socket: *socket, DryRun: *dryRun}
 
 	kb, err := ui.New(ui.Config{
-		Width:  *width,
-		Height: *height,
-		AppID:  *appID,
-		Title:  "mytouchinput",
-		Scale:  *scale,
+		Width:        *width,
+		Height:       *height,
+		AppID:        *appID,
+		Title:        "mytouchinput",
+		Scale:        *scale,
+		Layer:        *layer,
+		BottomMargin: *margin,
 	}, func(k layout.Key, shift bool) {
 		if k.Act == layout.ToggleIME {
 			switchIME()
