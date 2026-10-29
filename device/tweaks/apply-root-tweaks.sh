@@ -33,6 +33,12 @@ shift
 purge=1
 user_name=
 skip_user=0
+# Which desktop session the per-account half is being applied for.  The masks
+# in [mask-user] are a GNOME Shell optimisation and the ones in
+# [mask-user-phosh] are Phosh-specific; applying either set under the other
+# session is what broke Phosh's RequiredComponents.  auto reads
+# XDG_CURRENT_DESKTOP, which is "ubuntu:GNOME" or "Phosh:GNOME" here.
+session=auto
 skip_system=0
 dry_run=0
 while [ "$#" -gt 0 ]; do
@@ -40,6 +46,7 @@ while [ "$#" -gt 0 ]; do
 	--no-purge) purge=0 ;;
 	--dry-run) dry_run=1 ;;
 	--no-user) skip_user=1 ;;
+	--session) shift; [ "$#" -gt 0 ] || die '--session needs a value'; session=$1 ;;
 	--user-only) skip_user=0; skip_system=1 ;;
 	--user) shift; [ "$#" -gt 0 ] || die '--user needs an account name'; user_name=$1 ;;
 	*) die "unknown argument: $1" ;;
@@ -85,6 +92,10 @@ install_file etc/systemd/zram-generator.conf 0644
 # installed system applies exactly what the image builder applied.
 install_file usr/share/liuqin/root-trim.txt 0644
 install_file usr/local/sbin/liuqin-root-trim 0755
+# Hides the Android firmware partitions from udisks2, and so from the dock and
+# Files.  The rule only changes what the desktop is offered; the device nodes
+# and the partitions themselves are untouched.
+install_file etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 0644
 
 # --- the masks --------------------------------------------------------------
 # A mask is a symlink to /dev/null in /etc/systemd.  Only a unit that is still
@@ -116,6 +127,24 @@ mask system apt-daily-upgrade.timer
 mask system unattended-upgrades.service
 mask system update-notifier-download.timer
 
+# A udev rule is inert until udev re-reads it and the affected devices get a
+# fresh event, so make the volume hiding effective now instead of at the next
+# boot.  Reloading rules and re-triggering block devices does not disturb
+# mounted filesystems; restarting udisks2 drops its cached view and re-probes,
+# which is what removes the volumes the desktop was already showing.
+reload_udev() {
+	if [ "$dry_run" = 1 ]; then
+		say "would reload udev rules and restart udisks2"
+		return 0
+	fi
+	udevadm control --reload-rules ||
+		say "warning: udev rules not reloaded; the volume hiding applies after a reboot"
+	udevadm trigger --subsystem-match=block --action=change ||
+		say "warning: block devices not re-triggered"
+	systemctl try-restart udisks2.service >/dev/null 2>&1 || true
+}
+reload_udev
+
 # The kernel read-only remount guard reads this marker; the marker itself is
 # the installer's, so nothing to do here beyond leaving it alone.
 fi
@@ -132,93 +161,190 @@ fi
 #   extension:<uuid>   disable a GNOME Shell extension
 #
 # With --no-user this section is skipped, which is what the installer passes.
+case $session in
+auto)
+	case ${XDG_CURRENT_DESKTOP:-} in
+	*Phosh*) session=phosh ;;
+	*GNOME*) session=gnome ;;
+	*) session=other ;;
+	esac
+	;;
+gnome | phosh | other) : ;;
+*) die "--session must be auto, gnome, phosh or other" ;;
+esac
+
 mask_user() {
 	# Read the tree's own list when it is there (a real system), and the staged
 	# payload otherwise (a --dry-run before anything is installed).
 	trim=$root/usr/share/liuqin/root-trim.txt
 	[ -f "$trim" ] || trim=$here/payload/usr/share/liuqin/root-trim.txt
 	[ -f "$trim" ] || { say 'no trim list, nothing to mask per user'; return 0; }
-	entries=$(awk '
-		$0 == "[mask-user]" { inside = 1; next }
-		/^\[/ { inside = 0 }
-		inside && $0 !~ /^[[:space:]]*(#|$)/ { print $1 }
-	' "$trim")
-	[ -n "$entries" ] || { say 'the trim list has no [mask-user] entries'; return 0; }
 
-	if [ "$dry_run" = 1 ]; then
-		printf '%s\n' "$entries" | while read -r entry; do
-			say "would mask per user: $entry"
-		done
-		return 0
-	fi
+	section_entries() { # <section>
+		awk -v want="$1" '
+			$0 == "[" want "]" { inside = 1; next }
+			/^\[/ { inside = 0 }
+			inside && $0 !~ /^[[:space:]]*(#|$)/ { print $1 }
+		' "$trim"
+	}
+
+	# The section that belongs to the session that is starting, and the one
+	# that belongs to the other session.  Anything the other session asked for
+	# is removed here, so switching desktops cannot leave a stale mask behind -
+	# which is exactly how a Phosh session ended up starting without the
+	# RequiredComponents that [mask-user] masks.
+	case $session in
+	gnome) active=mask-user inactive=mask-user-phosh ;;
+	phosh) active=mask-user-phosh inactive=mask-user ;;
+	*) active= inactive='mask-user mask-user-phosh' ;;
+	esac
+
+	entries=
+	for section in $active; do
+		entries="$entries $(section_entries "$section")"
+	done
+	stale=
+	for section in $inactive; do
+		stale="$stale $(section_entries "$section")"
+	done
+	[ -n "$entries$stale" ] ||
+		{ say "no per-user entries for a $session session"; return 0; }
+
 	# The caller must name the account; guessing would mask units in the wrong
 	# session on a multi-user tablet.
 	[ -n "$user_name" ] || die '--no-user was not given but no user account was named'
 	uid=$(sed -n "s/^$user_name:x:\([0-9]*\):.*/\1/p" "$root/etc/passwd")
 	[ -n "$uid" ] || die "no such account in this tree: $user_name"
 	[ -d "$root/home/$user_name" ] || die "the account has no home directory: $user_name"
+	user_units=$root/home/$user_name/.config/systemd/user
 
 	units=
 	extensions=
 	for entry in $entries; do
 		case $entry in
-		gsd:* | gvfs:*) units="$units ${entry#*:}" ;;
+		gsd:* | gvfs:* | unit:*) units="$units ${entry#*:}" ;;
 		extension:*) extensions="$extensions ${entry#*:}" ;;
-		*) die "unrecognised [mask-user] entry: $entry" ;;
+		*) die "unrecognised entry for a $session session: $entry" ;;
 		esac
 	done
 
+	# Remove what the other session asked for.  Only links this product wrote
+	# are touched: a mask the account made for its own reasons also points at
+	# /dev/null, so the names come from the trim list rather than from whatever
+	# happens to be in the directory.
+	for entry in $stale; do
+		case $entry in
+		gsd:* | gvfs:* | unit:*) ;;
+		*) continue ;;
+		esac
+		unit=${entry#*:}
+		case " $units " in *" $unit "*) continue ;; esac
+		dst=$user_units/$unit
+		if [ -L "$dst" ] && [ "$(readlink "$dst")" = /dev/null ]; then
+			if [ "$dry_run" = 1 ]; then
+				say "would unmask per user (not used by $session): $unit"
+			else
+				rm -f "$dst"
+				say "unmasked per user (not used by $session): $unit"
+			fi
+		fi
+	done
+
 	if [ -n "$units" ]; then
-		# A symlink to /dev/null in the user's unit directory is the same mask
-		# systemd applies for a user unit; no daemon has to be running for it to
-		# take effect on the next login.
-		say "masking per-user units for $user_name:$units"
-		for unit in $units; do
-			dst=$root/home/$user_name/.config/systemd/user/$unit
-			mkdir -p "$(dirname -- "$dst")"
-			tmp=$dst.liuqin-tweaks.$$
-			ln -sfn /dev/null "$tmp"
-			mv -f "$tmp" "$dst"
-			[ "$(readlink "$dst")" = /dev/null ] || die "user mask did not land: $dst"
-		done
+		if [ "$dry_run" = 1 ]; then
+			for unit in $units; do
+				say "would mask per user: $unit"
+			done
+		else
+			# A symlink to /dev/null in the user's unit directory is the same
+			# mask systemd applies for a user unit; no daemon has to be running
+			# for it to take effect on the next login.
+			say "masking per-user units for $user_name ($session):$units"
+			for unit in $units; do
+				dst=$user_units/$unit
+				mkdir -p "$(dirname -- "$dst")"
+				tmp=$dst.liuqin-tweaks.$$
+				ln -sfn /dev/null "$tmp"
+				mv -f "$tmp" "$dst"
+				[ "$(readlink "$dst")" = /dev/null ] ||
+					die "user mask did not land: $dst"
+			done
+		fi
 	fi
 
-	if [ -n "$extensions" ]; then
-		# Extensions are not systemd units: GNOME Shell owns the list in dconf.
-		# Write it as a dconf keyfile the system reads on login, so the choice
-		# does not depend on a running shell here.
-		say "disabling extensions for $user_name:$extensions"
-		# dconf keyfiles want a GVariant list literal of quoted strings:
-		#   ['uuid', 'uuid']
-		# The quoting is done with printf and a single-quote character held in a
-		# variable, so no shell layer interprets it.
-		q=\'
-		list=$(for uuid in $extensions; do printf "%s%s%s, " "$q" "$uuid" "$q"; done)
-		# A user-only run cannot write /etc/dconf (root-owned), and does not need
-		# to: the account's own dconf profile is read first and is per-account
-		# by construction.  The system-wide key is what the package writes so
-		# that accounts created later inherit it.
-		if [ "$skip_system" = 1 ]; then
-			keyfile=$root/home/$user_name/.config/dconf/db/liuqin-tweaks
-			mkdir -p "$(dirname -- "$keyfile")"
-			printf 'user-db:user\nfile-db:/home/%s/.config/dconf/db/liuqin-tweaks\n' \
-				"$user_name" >"$root/home/$user_name/.config/dconf/user"
-			chmod 0644 "$root/home/$user_name/.config/dconf/user"
-		else
-			keyfile=$root/etc/dconf/db/local.d/10-liuqin-disabled-extensions
-			mkdir -p "$(dirname -- "$keyfile")"
-		fi
-		cat >"$keyfile" <<EOF
-# Written by apply-root-tweaks.sh from the [mask-user] section of
-# /usr/share/liuqin/root-trim.txt.  Disabling an extension is the only way to
-# stop a Shell extension without editing its schema; the cost is in the
-# section's comment.
-[org/gnome/shell]
-disabled-extensions=[${list%, }]
-EOF
-		chmod 0644 "$keyfile"
-		grep -q 'disabled-extensions' "$keyfile" || die 'the dconf keyfile did not land'
+	# Phosh's on-screen keyboard suppresses itself whenever an input device with
+	# keyboard capability is present (sm.puri.phosh.osk ignore-hw-keyboards).
+	# On this tablet the pogo keyboard keeps enumerating "Xiaomi Keyboard" even
+	# when it is folded behind the panel - the hall switch reports tablet mode at
+	# the same time - so Phosh concluded there was a keyboard and never showed
+	# the on-screen one: with the tablet in hand, no text field could be typed
+	# into at all.  Turning the key on makes the keyboard follow text input
+	# instead of device presence.
+	phosh_osk=
+	if [ "$session" = phosh ]; then
+		phosh_osk=1
 	fi
+
+	if [ -n "$extensions" ] || [ -n "$phosh_osk" ]; then
+		if [ "$dry_run" = 1 ]; then
+			for uuid in $extensions; do
+				say "would disable extension: $uuid"
+			done
+			if [ -n "$phosh_osk" ]; then
+				say 'would make the on-screen keyboard ignore the pogo keyboard'
+			fi
+			return 0
+		fi
+
+		if [ "$skip_system" = 1 ]; then
+			# A live session: write the keys through dconf.  An earlier version
+			# wrote a text keyfile to ~/.config/dconf/db/liuqin-tweaks and pointed
+			# a profile at it, but file-db: only accepts databases built by
+			# `dconf compile`, so the text file was never read and none of these
+			# settings ever took effect.  dconf write needs no profile and reaches
+			# the database the session is already using.
+			if [ -n "$extensions" ]; then
+				say "disabling extensions for $user_name:$extensions"
+				# GVariant list literal of quoted strings: ['uuid', 'uuid']
+				q=\'
+				list=$(for uuid in $extensions; do
+					printf "%s%s%s, " "$q" "$uuid" "$q"
+				done)
+				dconf write /org/gnome/shell/disabled-extensions \
+					"[${list%, }]" ||
+					die 'could not write the disabled extension list'
+			fi
+			if [ -n "$phosh_osk" ]; then
+				say 'on-screen keyboard now ignores the pogo keyboard'
+				dconf write /sm/puri/phosh/osk/ignore-hw-keyboards true ||
+					die 'could not write the on-screen keyboard setting'
+			fi
+		else
+			# Staging a tree that is not running: leave the text keyfile where
+			# dconf update compiles it on the target (/etc/dconf/db/local.d).
+			keyfile=$root/etc/dconf/db/local.d/10-liuqin-tweaks
+			mkdir -p "$(dirname -- "$keyfile")"
+			{
+				printf '# Written by apply-root-tweaks.sh from the per-user sections\n'
+				printf '# of /usr/share/liuqin/root-trim.txt.  The reasons are in the\n'
+				printf '# sections themselves.\n'
+				if [ -n "$extensions" ]; then
+					q=\'
+					list=$(for uuid in $extensions; do
+						printf "%s%s%s, " "$q" "$uuid" "$q"
+					done)
+					printf '\n[org/gnome/shell]\n'
+					printf 'disabled-extensions=[%s]\n' "${list%, }"
+				fi
+				if [ -n "$phosh_osk" ]; then
+					printf '\n[sm/puri/phosh/osk]\nignore-hw-keyboards=true\n'
+				fi
+			} >"$keyfile"
+			chmod 0644 "$keyfile"
+			say "staged dconf keys in /etc/dconf/db/local.d (dconf update compiles them)"
+		fi
+	fi
+
 }
 
 # --- the trim ---------------------------------------------------------------

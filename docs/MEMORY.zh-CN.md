@@ -198,6 +198,32 @@ sudo apt-get install -y ./google-chrome-stable_current_arm64.deb
 仍归安装包负责，会话单元只做单元屏蔽。`liuqin-session-tweaks.service` 就是首次登录时
 做按账户这一半的单元——它覆盖的正是全新安装后 `gnome-initial-setup` 才创建的账户。
 
+### Dock 和文件管理器在列 Android 分区
+
+把 gvfs 卷监视器砍到只剩 udisks2，去掉了网络和媒体来源，但恰恰漏掉了这台设备上
+最要紧的那一个。出厂分区表在内置 UFS 上有十二个带真实文件系统的分区——`metadata`、
+`persist`、`persistbak`、`dsp_a`、`dsp_b`、`vm-bootsys_a`、`vm-bootsys_b`（ext4）、
+`logfs`、`modem_a`、`modem_b`、`bluetooth_a`、`bluetooth_b`（vfat）以及 `cust`
+（erofs）——udisks2 把每一个都当成可挂载卷报了出去。于是 dock 和文件管理器里出现了
+一堆匿名的 `31 MB Volume`、`67 MB Volume`、`275 MB Volume`、`4.2 MB Volume`、
+`168 MB Volume`，外加两个有名字的 `dsp` 和 `LOGFS`。
+
+这些是固件，不是存储：对其中一个做读写挂载，很容易弄丢引导需要的分区。
+`90-liuqin-hide-android-volumes.rules` 给它们设上 `UDISKS_IGNORE=1`，udisks2 会
+完全跳过该设备，于是它从 udisks 里、从 GVfs 卷监视器里、进而从 dock 和文件管理器
+侧栏里一起消失。
+
+匹配范围是刻意收窄的：按 `DEVPATH` 里的内置 UFS 控制器（`*/1d84000.ufshc/*`）
+匹配，而不是按 `sd*` 名字，因为内置磁盘在这里是 `sda`..`sdf`，一个笼统的
+`sd[a-z][0-9]*` 会把插进接口的 U 盘也一起隐藏掉。`linux_root` 和 `linux_home`
+被排除在外，系统自身的分区照常可见。设备节点没有任何改动——指纹运行时和启动工具
+都是直接打开 `/dev/disk/by-partlabel/*`，从不经过 udisks。
+
+用桌面读的同一个监视器实测：卷列表从 14 项变成 0 项。`tests/memory-features.py`
+新增了 `volume-hiding` 特性，既检查规则内容，也在真实系统上检查全部十四个分区
+加上两个必须保持可见的分区对应的 udev 数据库——规则文件只能证明意图，udev 数据库
+才能证明它真的生效了。
+
 ### 唯一还能省更多的地方
 
 这次测量里 `zram` 是空闲的（`mm_stat` 显示没有存储任何页），因为刚开机的系统还
@@ -299,9 +325,11 @@ xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进
 - **在平板上。** 这个文件是可移植的，推上去对着 `/` 跑即可：
   `adb -s liuqin push tests/memory-features.py /tmp/`，然后
   `adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --root / --packages'`。
-  在本次实测的那台机器上，`zram-swap` 通过（它确实已经部署），而 `rootfs-trim` 与
-  `unit-masks` 报出「手工裁剪」留下的真实差异：没有
-  `/usr/local/sbin/liuqin-root-trim`，而且两个更新定时器没有被屏蔽——因为那两个包是
+  要用 root 跑。指纹固件缓存是 `0700` 目录里的 `0600` 文件，普通账号 stat 不到；门禁
+  现在会报 `cannot be inspected without root`，而不是把文件说成缺失——它以前就是这么说
+  的，于是权限问题看起来像回归。
+  在本次实测的那台机器上，五项特性全部通过，包括 `volume-hiding`；它的 udev 部分只在
+  `--root` 指向正在运行的系统时才会检查。
   被直接删掉的。这两项都来自仓库里的清单，所以**用当前这棵树构建的 bundle 里都有**；
   眼前这台机器是拿旧镜像手工裁的。
 

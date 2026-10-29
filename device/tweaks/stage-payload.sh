@@ -10,6 +10,7 @@
 #   device/configs/liuqin-root-trim.txt        the reviewed trim list
 #   device/gnome-overlay/etc/systemd/zram-generator.conf
 #   device/gnome-overlay/usr/local/sbin/liuqin-root-trim
+#   device/gnome-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules
 #
 # Usage: sh device/tweaks/stage-payload.sh OUT_DIR
 # Writes OUT_DIR/payload/<relative path> for every installed file.
@@ -55,6 +56,8 @@ stage device/gnome-overlay/etc/systemd/zram-generator.conf \
 	etc/systemd/zram-generator.conf 0644
 stage device/gnome-overlay/usr/local/sbin/liuqin-root-trim \
 	usr/local/sbin/liuqin-root-trim 0755
+stage device/gnome-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules \
+	etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 0644
 
 # The staged list must still be the shape apply-root-tweaks.sh and the image
 # builder read, or the trim silently becomes a no-op.
@@ -64,6 +67,9 @@ grep -qx '\[keep\]' "$out/payload/usr/share/liuqin/root-trim.txt" ||
 	{ printf 'stage-payload: the trim list lost [keep]\n' >&2; exit 1; }
 grep -qx 'compression-algorithm = zstd' "$out/payload/etc/systemd/zram-generator.conf" ||
 	{ printf 'stage-payload: the zram geometry lost its compressor\n' >&2; exit 1; }
+grep -q 'UDISKS_IGNORE' \
+	"$out/payload/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules" ||
+	{ printf 'stage-payload: the volume-hiding rule lost UDISKS_IGNORE\n' >&2; exit 1; }
 
 printf 'stage-payload: %s files in %s\n' \
 	"$(find "$out/payload" -type f | wc -l | tr -d ' ')" "$out/payload"

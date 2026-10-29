@@ -240,6 +240,38 @@ units. `liuqin-session-tweaks.service` is the unit that does the per-account
 half on first login, which is what covers the account gnome-initial-setup
 creates after a fresh install.
 
+### The dock and Files were listing the Android partitions
+
+Cutting the gvfs volume monitors down to udisks2 removed the network and media
+sources, but it left the one that mattered on this device. The stock layout has
+twelve partitions on the internal UFS that carry a real filesystem - `metadata`,
+`persist`, `persistbak`, `dsp_a`, `dsp_b`, `vm-bootsys_a`, `vm-bootsys_b`
+(ext4), `logfs`, `modem_a`, `modem_b`, `bluetooth_a`, `bluetooth_b` (vfat) and
+`cust` (erofs) - and udisks2 offered every one of them as a mountable volume.
+The dock and Files showed them as anonymous `31 MB Volume`, `67 MB Volume`,
+`275 MB Volume`, `4.2 MB Volume` and `168 MB Volume` entries, plus two labelled
+`dsp` and `LOGFS`.
+
+They are firmware, not storage: mounting one read-write is a good way to lose a
+partition the bootloader needs. `90-liuqin-hide-android-volumes.rules` sets
+`UDISKS_IGNORE=1` on them, which makes udisks2 skip the device entirely, so it
+disappears from udisks, from the GVfs volume monitor, and therefore from the
+dock and the Files sidebar.
+
+The match is deliberately narrow: it keys on the internal UFS controller in
+`DEVPATH` (`*/1d84000.ufshc/*`) rather than on `sd*` names, because the internal
+disks are `sda`..`sdf` here and a plain `sd[a-z][0-9]*` pattern would also hide
+a USB stick plugged into the port. `linux_root` and `linux_home` are excluded so
+the system's own partitions stay visible. Device nodes are untouched - the
+fingerprint runtime and the boot tooling open `/dev/disk/by-partlabel/*`
+directly and never go through udisks.
+
+Measured with the same monitor the desktop reads: the volume list went from 14
+entries to none. `tests/memory-features.py` gained a `volume-hiding` feature that
+checks the rule's contents and, on a live system, the udev database for all
+fourteen partitions plus the two that must stay visible - a rule file proves
+intent, the database proves it took effect.
+
 ### The one thing that would save more
 
 `zram` is idle in this measurement (`mm_stat` shows no stored pages) because a
@@ -358,10 +390,14 @@ It runs in three places:
 - **on a tablet.** The file is portable; push it and run it against `/`:
   `adb -s liuqin push tests/memory-features.py /tmp/` then
   `adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --root / --packages'`.
-  On the unit this work was measured on, `zram-swap` passes — that one *is*
-  deployed — while `rootfs-trim` and `unit-masks` report what a hand-applied
-  trim leaves behind: no `/usr/local/sbin/liuqin-root-trim`, and the update
-  timer masks missing because those packages were purged rather than masked.
+  Run it as root. The fingerprint cache is `0600` files inside a `0700`
+  directory, so an ordinary account cannot stat them; the gate now reports
+  `cannot be inspected without root` for that rather than calling the files
+  missing, which is what it used to do and what made a permission problem look
+  like a regression.
+  On the unit this work was measured on all five features pass, including
+  `volume-hiding`, whose udev half is only checked when `--root` is the running
+  system.
   Both come from the shipped list, so a bundle built from this tree has them;
   the tablet in front of us was trimmed by hand from an older image.
 

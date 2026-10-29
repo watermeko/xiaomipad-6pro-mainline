@@ -161,3 +161,29 @@ extension:ubuntu-appindicators@ubuntu.com
 # provider and a prompting UI for a package manager that is not installed.
 extension:snapd-prompting@canonical.com
 extension:snapd-search-provider@canonical.com
+
+[mask-user-phosh]
+# Units that are only worth masking in a Phosh session, where they are
+# redundant rather than required.  A GNOME Shell session ignores this section.
+#
+# xdg-desktop-portal-gnome: 38 MB.  The portal backends declare UseIn=gnome
+# (gnome.portal, gtk.portal) or UseIn=phosh (phosh.portal, phrosh.portal), and
+# Phosh's session sets XDG_CURRENT_DESKTOP=Phosh:GNOME.  Both tokens match, so
+# xdg-desktop-portal starts the GNOME backend as well as the Phosh one.  Phosh
+# implements every interface this tablet uses; the GNOME backend exists for
+# GNOME Shell's screencast and window-control interfaces, which do not apply
+# here.  Masking it lets those requests fall through to the phosh and gtk
+# backends.
+#
+# Deliberately absent, each with the reason it cannot be done:
+#   gsd-print-notifications (10 MB): phosh.session lists it in
+#     RequiredComponents, so masking it starts the session without it.
+#   gsd-printer (12 MB): not a unit at all - it is a child process of
+#     gsd-print-notifications (verified: same session.slice cgroup), so it
+#     cannot go without its parent.
+#   gsd-wwan, gsd-smartcard, gsd-sharing, gsd-usb-protection: RequiredComponents
+#     of phosh.session, same reason.
+#   phosh-osk-stevia (105 MB): the on-screen keyboard itself, started by
+#     mobi.phosh.OSK.target which the session requires.  Making it lazy would
+#     make the first text field focus wait for the keyboard to start.
+unit:xdg-desktop-portal-gnome.service

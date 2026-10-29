@@ -78,6 +78,22 @@ FEATURES = {
         'content': {'/usr/local/lib/liuqin-fpc-oem/firmware/SHA256.json': '"schema": 2'},
         'packages_present': ['fprintd'],
     },
+    'volume-hiding': {
+        'why': 'the stock layout leaves twelve filesystem-bearing Android '
+               'partitions on the internal UFS, so udisks2 offered each of them '
+               'as a mountable volume and the dock and Files filled up with '
+               'anonymous "31 MB Volume" entries',
+        'paths': {'/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules': None},
+        'content': {'/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules':
+                    'ENV{UDISKS_IGNORE}="1"'},
+        # Live-system only: a rule file proves intent, the udev database proves
+        # it took effect.  linux_root and linux_home must NOT be ignored, which
+        # is what keeps the system's own partitions visible.
+        'udev_ignored': ['persist', 'metadata', 'persistbak', 'dsp_a', 'dsp_b',
+                         'vm-bootsys_a', 'vm-bootsys_b', 'logfs', 'cust', 'qmcs',
+                         'modem_a', 'modem_b', 'bluetooth_a', 'bluetooth_b'],
+        'udev_visible': ['linux_root', 'linux_home'],
+    },
     'unit-masks': {
         'why': 'colord cannot be purged (it takes gnome-control-center with it) '
                'and localsearch is a Depends of nautilus, so their daemons are '
@@ -143,6 +159,41 @@ def read_section(text, want):
     return names
 
 
+def probe(path):
+    """Existence of a path, telling "missing" apart from "cannot look".
+
+    The fingerprint cache is root-only (0600 files inside a 0700 directory), so
+    running this gate as an ordinary account made every file look absent and
+    turned a permission problem into a fake regression.  Say which one it is.
+    """
+    try:
+        os.stat(path)
+        return 'present'
+    except PermissionError:
+        return 'denied'
+    except FileNotFoundError:
+        return 'missing'
+    except OSError:
+        return 'missing'
+
+
+def udev_properties(label):
+    """Read one partition's udev database entry, or None if it does not exist."""
+    node = Path('/dev/disk/by-partlabel') / label
+    if not os.path.lexists(node):
+        return None
+    try:
+        out = subprocess.run(['udevadm', 'info', '--query=property', '--name',
+                              str(node)], capture_output=True, text=True).stdout
+    except OSError:
+        return None
+    properties = {}
+    for line in out.splitlines():
+        key, _, value = line.partition('=')
+        properties[key] = value
+    return properties or None
+
+
 def parse_config(path):
     path = Path(path)
     if path.suffix == '.gz' or path.name.endswith('config.gz'):
@@ -176,7 +227,11 @@ def check(feature, spec, config, root, use_packages):
         tree = Path(root)
         for rel, target in spec.get('paths', {}).items():
             path = tree / rel.lstrip('/')
-            if not os.path.lexists(path):
+            state = probe(path)
+            if state == 'denied':
+                failures.append('%s cannot be inspected without root' % rel)
+                continue
+            if state == 'missing':
                 failures.append('%s is missing' % rel)
                 continue
             if target is not None:
@@ -202,6 +257,23 @@ def check(feature, spec, config, root, use_packages):
             path = tree / rel.lstrip('/')
             if path.is_file() and needle not in path.read_text(errors='replace'):
                 failures.append('%s does not contain %r' % (rel, needle))
+        # /dev/disk/by-partlabel describes the machine this runs on, so the
+        # udev side is only meaningful when the root tree is that machine.
+        # An extracted image tree has no devices to inspect.
+        if os.path.realpath(tree) == '/':
+            for label in spec.get('udev_ignored', []):
+                properties = udev_properties(label)
+                if properties is None:
+                    failures.append('partition %s is absent, so hiding it proves '
+                                    'nothing' % label)
+                elif properties.get('UDISKS_IGNORE') != '1':
+                    failures.append('%s is still offered to udisks2' % label)
+            for label in spec.get('udev_visible', []):
+                properties = udev_properties(label)
+                if properties is None:
+                    failures.append('partition %s is absent' % label)
+                elif properties.get('UDISKS_IGNORE') == '1':
+                    failures.append('%s was hidden but is the system itself' % label)
         if use_packages:
             for package in spec.get('packages_present', []):
                 got = package_installed(tree, package)
