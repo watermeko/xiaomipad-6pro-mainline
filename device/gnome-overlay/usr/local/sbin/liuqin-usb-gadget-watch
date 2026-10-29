@@ -1,0 +1,93 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Rebuild the USB gadget when the link comes back after going away.
+#
+# adbd does not survive the FUNCTIONFS_SUSPEND that a host reboot, a cable
+# event or a port reset produces.  It logs "UsbFfs: offline", destroys the
+# transport, and then waits for an enable event that never arrives - because
+# the gadget keeps its stale "configured" state.  The device then disappears
+# from the host entirely: `adb devices` shows "offline" or nothing, and nothing
+# recovers until someone rebinds the gadget by hand.
+#
+# Rebuilding is the only repair: liuqin-usb-gadget tears the gadget down and
+# creates it again, which forces the host to re-enumerate and gives adbd fresh
+# endpoints.  That is what this watches for.
+#
+# The trigger is an up -> down -> up cycle, not simply "up".  At boot the gadget
+# is bound before the host configures it, so a plain "configured" check would
+# rebuild the gadget on every boot for no reason.  A link that was up and went
+# away is the case that actually needs the repair.
+set -u
+
+UDC=/sys/class/udc/a600000.usb
+GADGET_UNIT=liuqin-usb-gadget.service
+ADBD_UNIT=liuqin-adbd.service
+[ -e "$UDC/state" ] || exit 0
+
+log() { logger -t liuqin-usb-gadget-watch "$*"; }
+
+# adbd's own view: if the last thing it said about the transport is "offline",
+# it is not serving even though the link may read as configured.  This catches
+# the case where the UDC state never left "configured" during the outage.
+adbd_is_offline() {
+	last=$(journalctl -u "$ADBD_UNIT" -n 80 --no-pager -o cat 2>/dev/null |
+		grep -oE 'UsbFfs: (offline|online)|USB event: FUNCTIONFS_[A-Z]+' |
+		tail -1)
+	[ "$last" = 'UsbFfs: offline' ]
+}
+
+rebuild() {
+	log "rebuilding the gadget: $*"
+	if ! systemctl restart "$GADGET_UNIT"; then
+		log "gadget rebuild failed; will try again on the next transition"
+		return 1
+	fi
+	# The rebuild itself unbinds and rebinds the UDC, so give it time to settle
+	# before the loop reads the state again, otherwise it sees its own churn.
+	sleep 10
+	return 0
+}
+
+seen_up=0
+was_up=0
+offline_streak=0
+tick=0
+
+while sleep 3; do
+	state=$(cat "$UDC/state" 2>/dev/null) || continue
+
+	if [ "$state" = configured ]; then
+		if [ "$seen_up" = 1 ] && [ "$was_up" = 0 ]; then
+			rebuild "link returned after an outage" || true
+			was_up=1
+			offline_streak=0
+			continue
+		fi
+		was_up=1
+		seen_up=1
+		# Safety net for a link that never reported the outage: the state is
+		# still "configured", but adbd says it is offline.  The journal is only
+		# consulted every 30s - spawning journalctl on every tick is a lot of
+		# process churn for a check that only matters when something is wrong -
+		# and two consecutive confirmations are required so a transport that is
+		# merely starting up is not mistaken for a stuck one.
+		tick=$((tick + 1))
+		if [ "$tick" -ge 10 ]; then
+			tick=0
+			if adbd_is_offline; then
+				offline_streak=$((offline_streak + 1))
+				if [ "$offline_streak" -ge 2 ]; then
+					rebuild "adbd reports the transport offline while the link is up" || true
+					offline_streak=0
+				fi
+			else
+				offline_streak=0
+			fi
+		fi
+	else
+		was_up=0
+		offline_streak=0
+		tick=0
+	fi
+done

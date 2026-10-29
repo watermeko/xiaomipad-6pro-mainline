@@ -1,0 +1,18 @@
+[Unit]
+Description=Rebuild the USB gadget when the link returns
+Documentation=file:///usr/local/sbin/liuqin-usb-gadget-watch
+# The gadget itself has to exist before its UDC state means anything.
+After=liuqin-usb-gadget.service
+Requires=liuqin-usb-gadget.service
+ConditionPathExists=/sys/class/udc/a600000.usb
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/liuqin-usb-gadget-watch
+# A watcher that dies is a watcher that silently stops recovering the link.
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
