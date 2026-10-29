@@ -172,6 +172,84 @@ ships without a browser and the user picks one.  No browser is added to a
 product one, and the two candidates differ by 2× the package count and 2× the
 memory.
 
+## Further reduction: what else was measured
+
+The trim above brought the idle session to 1406 MB.  A second pass looked for
+what was left, measuring every change on the tablet before keeping it.  All of
+it is in the `[mask-user]` section of `device/configs/liuqin-root-trim.txt` and
+applied by `device/tweaks/apply-root-tweaks.sh --user <account>`.
+
+| Change | Saved | Cost |
+|---|---:|---|
+| mask `gsd-{wwan,smartcard,sharing,print-notifications,usb-protection}` | 72 MB | hardware this tablet does not have; none is a `Requires` |
+| mask `gsd-xsettings` | (in the 72) | only serves X11 clients, and the X11 layer is unused |
+| mask `gvfs-{afc,gphoto2,mtp,goa}-volume-monitor` | 36 MB | cannot act as an iOS/PTP/MTP host; goa has no backend left |
+| disable `ding@rastersoft.com` | 77 MB | desktop icons; Files and the dock still work |
+| disable `ubuntu-appindicators@ubuntu.com` | 99 MB | StatusNotifier tray icons; nothing in this image uses the protocol |
+| disable `snapd-prompting`, `snapd-search-provider` | small | they stay ACTIVE for a package manager the trim removes |
+| **total** | **~212 MB** | 1406 → **1194 MB** (terminal closed) |
+
+The last two rows were found only after the first were applied: `ding` was
+hiding them in the same measurement bucket. The 99 MB indicator host was the
+single largest process anywhere in the session, larger than the compositor's
+own helper processes — worth knowing before any future assumption that "small"
+extensions are small.
+
+Two things were investigated and **rejected**, because the numbers did not
+justify the risk:
+
+- **`Xwayland` + `mutter-x11-frames` (117 MB together).** Killing
+  `mutter-x11-frames` works and it does not come back. `Xwayland` restarts on
+  demand: it is started by Mutter itself when an X11 client connects, and
+  `gsd-xsettings` was not the trigger (masking it changed nothing). Nothing in
+  this session is an X11 client, so the process is left running by Mutter's own
+  startup path rather than by demand. Disabling it needs a Mutter experimental
+  feature that is not upstream-stable, so it stays.
+- **`ibus` (69 MB).** This is the Chinese input method. A tablet with
+  `screen-keyboard-enabled=true` and no hardware keyboard needs it, so it is
+  not a candidate at all.
+
+What is left, and why it stays:
+
+| Group | MB | Why |
+|---|---:|---|
+| `other` (~95 processes) | 291 | udisksd, NetworkManager, polkitd, iio-sensor-proxy, adbd, journald, gdm3, systemd itself |
+| `gnome-shell` | 311 | the compositor and the desktop |
+| X11 compatibility | 121 | see above |
+| `gsd-*` (11 left) | 111 | power, media keys, keyboard, rfkill, sound, colour, datetime, a11y, screensaver, disk-utility, housekeeping |
+| `xdg-desktop-portal*` | 113 | Flatpak, Waydroid and sandboxed apps route through these |
+| `ibus` | 71 | Chinese input |
+| `audio` | 67 | PipeWire + WirePlumber for four speakers |
+| `gjs` (2 left) | 56 | the shell's notification and screensaver helpers |
+| `gvfs` | 55 | trash, udisks2 volume monitor, fuse, metadata |
+
+### Verification after the second pass
+
+The masks and the dconf key were confirmed to survive a reboot: `gsd-*` went
+from 18 to 11 processes, `gvfs-*-volume-monitor` from 5 to 1 (only udisks2), all
+four extensions reported `INITIALIZED` (the state of one that is installed but
+not running), and the session came up normally with the power key, volume keys,
+the magnetic keyboard, rfkill, auto-rotation and the disk mounts still working.
+
+Getting the extension list to survive took two fixes, both caught by rebooting
+rather than by reading the code: `apply-root-tweaks.sh` assumed root and failed
+as an ordinary account (the session unit has to skip the system half, which is
+what `--user-only` is for), and a per-account run cannot write `/etc/dconf`, so
+the system-wide key stays the package's job while the session unit only masks
+units. `liuqin-session-tweaks.service` is the unit that does the per-account
+half on first login, which is what covers the account gnome-initial-setup
+creates after a fresh install.
+
+### The one thing that would save more
+
+`zram` is idle in this measurement (`mm_stat` shows no stored pages) because a
+fresh boot has nothing to reclaim yet. Its value is not the idle number — it is
+that a browser allocation no longer ends the session. Beyond that, the next
+real step is a lighter session (a wlroots compositor instead of
+`gnome-shell` + `gsd` + `gjs`), which the notes in
+[Memory notes](../docs/MEMORY.md#is-a-non-gnome-desktop-worth-it) already size
+at ~600 MB — for the cost of the GNOME integration this project owns.
+
 ## Is a non-GNOME desktop worth it?
 
 Measured on this unit, the entire GNOME stack above the kernel is ~755 MB. A

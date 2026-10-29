@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--candidate-config", type=Path, required=True, help="Public account and support-kernel metadata")
     parser.add_argument("--firmware", type=Path, help="External OEM firmware directory for a new stage")
     parser.add_argument("--revision", help="Public program revision recorded in CANDIDATE.json")
+    parser.add_argument("--rom", help="Stock ROM version the --firmware directory came from")
     options = parser.parse_args()
     if options.output.exists() or options.output.with_suffix(".json").exists():
         raise RuntimeError("Preserve the existing archive; use a new output path")
@@ -123,9 +124,19 @@ def main():
     if options.revision:
         candidate["revision"] = options.revision
     if firmware_sources:
-        (stage / "firmware/SHA256.json").write_text(json.dumps(
-            {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in firmware_sources.items()},
-            indent=2) + "\n")
+        # Emit the multi-identity schema even for one set, so the runtime has a
+        # single format to read.  --firmware names one ROM's ten files; a second
+        # release is added to the reviewed manifest in the repository, not by
+        # pointing this flag at a merged directory.
+        rom = options.rom or "unlabelled"
+        (stage / "firmware/SHA256.json").write_text(json.dumps({
+            "schema": 2,
+            "sets": [{
+                "rom": rom,
+                "files": {name: hashlib.sha256(path.read_bytes()).hexdigest()
+                          for name, path in firmware_sources.items()},
+            }],
+        }, indent=2) + "\n")
     (stage / "CANDIDATE.json").write_text(json.dumps(candidate, indent=2)+"\n")
     hashes = {p.relative_to(stage).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
               for p in sorted(stage.rglob("*")) if p.is_file() and p not in (stage/"SHA256.json", stage/"SHA256SUMS") and "__pycache__" not in p.parts}

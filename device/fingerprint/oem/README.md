@@ -128,13 +128,34 @@ The first-user profile and local firmware extraction still require final image
 verification; the preceding device results describe the bound development bundle.
 
 The public Debian package **does not distribute OEM trusted applications**.
-It includes [ten fixed hashes](firmware/SHA256.json) and their
-[stock provenance](firmware/NOTICE). Before late module loading, it reuses a
+It includes [fixed hashes for each verified stock ROM](firmware/SHA256.json) and
+their [provenance](firmware/NOTICE). Before late module loading, it reuses a
 verified local cache or mounts this tablet's `modem_a` FAT read-only and copies
 only those ten files. This occurs on normal boot, after the installer repairs
 the stock modem image. A missing or mismatched image fails fingerprint startup
 without a repair/retry loop, raw writes, or blocking password login. No firmware
 extraction or credential creation runs during Debian/rootfs installation.
+
+The manifest holds more than one identity because Xiaomi re-signed this trusted
+application between stock releases, and `modem_a` carries whichever one the
+unit's last update wrote. `OS2.0.6.0.VMYCNXM` and `OS3.0.7.0.VMYCNXM` differ only
+in `fpcliu.mdt` and `fpcliu.b08`; the eight `b00`-`b07` segments are identical.
+A device must match **one set in full** — the selection is per release, never
+per file, because `fpcliu.mdt` is the image's ELF header and `fpcliu.b08` its
+signature, so a set mixed from two releases would describe a body it does not
+contain. A unit matching no set still disables the service.
+
+A unit running a ROM newer than any listed here prints the hashes it found:
+
+```
+stock FPC firmware matches none of the 2 known ROM identities
+(OS2.0.6.0.VMYCNXM, OS3.0.7.0.VMYCNXM); this unit's fpcliu.mdt=…; fpcliu.b08=…,
+known: OS2.0.6.0.VMYCNXM mdt=…, OS3.0.7.0.VMYCNXM mdt=…
+```
+
+Compare `fpcliu.mdt` and `fpcliu.b08` with the `NON-HLOS.bin` from that ROM's
+`images/` directory. If they match, the release can be added: ten hashes read
+from that file, with the ROM version and source recorded beside them.
 
 ### Internal source builds and bound development bundles
 
@@ -158,6 +179,52 @@ cross-build, the TOD/PAM scripts accept `CC` and target pkg-config paths; the
 fprintd script also accepts `MESON_CROSS_FILE`. These commands do not connect to a
 device or create credentials. Link against the target libraries and matching
 TOD headers; compilation is not hardware acceptance.
+
+### Rebuilding only the TOD, when the dev package would move the ABI
+
+The released bundle ships a prebuilt `tod/libfprint-tod-fpc1264-oem.so` pinned by
+hash. Changing the driver source therefore needs a rebuild, and on an installed
+tablet the archive's `libfprint-2-tod-dev` can be a newer build than the runtime
+the shipped `.so` was linked against - installing it would move that ABI.
+
+Build against extracted headers instead. Nothing is installed, so the runtime
+package is untouched:
+
+~~~sh
+# on the tablet, from the versions it actually runs
+sudo apt-get install -y --no-install-recommends gcc make pkg-config \
+    libglib2.0-dev libgudev-1.0-dev libgusb-dev libpixman-1-dev libnss3-dev
+
+# fetch the dev packages at exactly the installed runtime version and extract
+V=$(dpkg-query -W -f='${Version}' libfprint-2-tod1 | sed 's/^1://')
+mkdir -p /tmp/toddev && cd /tmp/toddev
+for p in libfprint-2-dev libfprint-2-tod-dev; do
+    curl -sSLO "http://ports.ubuntu.com/ubuntu-ports/pool/main/libf/libfprint/${p}_${V}_arm64.deb"
+    dpkg-deb -x "${p}_${V}_arm64.deb" .
+done
+
+# the runtime ships only libfprint-2-tod.so.1; give the linker a name
+mkdir -p /tmp/todlib
+ln -sfn /usr/lib/aarch64-linux-gnu/libfprint-2-tod.so.1 /tmp/todlib/libfprint-2-tod.so
+
+TOD_HEADERS=/tmp/toddev/usr/include TOD_LIBDIR=/tmp/todlib \
+    OUT_DIR=/tmp/todout CC=gcc sh tools/build-tod.sh
+~~~
+
+Then package it, which records both the new hash and the source it came from in
+`CANDIDATE.json`:
+
+~~~sh
+python3 tools/build-liuqin-fingerprint-deb.py \
+    --bundle tools/local/downloads/fingerprint/v0.6.0/fingerprint-build-inputs.tar.gz \
+    --out out/fingerprint-deb --version 0.6.0 --tod /tmp/todout/libfprint-tod-fpc1264-oem.so
+~~~
+
+`--tod` refuses anything that is not an AArch64 shared object exporting the TOD
+entry point and linking `libfprint-2-tod.so.1`, `libgio-2.0.so.0` and
+`libglib-2.0.so.0`. The build is reproducible: the same source and headers give
+the same hash, which is how the 2026-10 driver change was verified.
+
 
 Copy `candidate-config.example.json` outside source, replace its historical
 stable-#2 kernel/boot identifiers with the actual inputs, and set the real

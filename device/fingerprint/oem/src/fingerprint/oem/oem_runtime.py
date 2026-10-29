@@ -12,6 +12,13 @@ import sys
 import tempfile
 import time
 
+# provision_firmware.py is installed beside this module (both land in
+# /usr/local/lib/liuqin-fpc-oem), so the cache check and the provisioning step
+# share one definition of "a known firmware identity" instead of two that can
+# drift apart.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import provision_firmware  # noqa: E402
+
 
 def main():
     arguments = sys.argv[1:]
@@ -68,11 +75,15 @@ def main():
                             rpmb_mode == "--ufs-rpmb-authenticated" else "--serve-read-only"]
         expected_listeners = 3
     firmware = here / "firmware"
-    expected = json.loads((firmware / "SHA256.json").read_text())
-    for name, digest in expected.items():
-        if hashlib.sha256((firmware / name).read_bytes()).hexdigest() != digest:
-            print("bundled OEM firmware hash mismatch", file=sys.stderr)
-            return 2
+    # The cache holds one ROM's ten files, so it has to match one identity in
+    # full.  checking per file would accept a cache assembled from two releases,
+    # whose ELF header and signature would not describe its body.  The parser is
+    # shared with the provisioning step so both agree on what a set is.
+    identities = provision_firmware.checked_hashes(firmware)
+    cached = provision_firmware.matching_identity(firmware, identities)
+    if cached is None:
+        print("bundled OEM firmware matches no known ROM identity", file=sys.stderr)
+        return 2
     state = Path("/run/liuqin-fpc-oem-runtime")
     state.mkdir(mode=0o700, exist_ok=True)
     os.chmod(state, 0o700)

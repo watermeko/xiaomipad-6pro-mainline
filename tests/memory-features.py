@@ -66,6 +66,18 @@ FEATURES = {
                              'pipewire', 'wireplumber', 'fprintd',
                              'iio-sensor-proxy', 'libqmi-glib5', 'libqrtr-glib0'],
     },
+    'fingerprint': {
+        'why': 'the FPC1264 module only loads after its ten trusted-application '
+               'files are cached from modem_a, and a stock ROM re-signed between '
+               'releases is what made the shipped hash list refuse this unit',
+        # The cache holds one ROM's ten files.  The names are checked here and
+        # the identity is checked by the runtime itself; what this gate proves
+        # is that provisioning ran at all, which is what silently stopped.
+        'paths': {('/usr/local/lib/liuqin-fpc-oem/firmware/' + name): None
+                  for name in ('fpcliu.mdt', *(f'fpcliu.b{i:02d}' for i in range(9)))},
+        'content': {'/usr/local/lib/liuqin-fpc-oem/firmware/SHA256.json': '"schema": 2'},
+        'packages_present': ['fprintd'],
+    },
     'unit-masks': {
         'why': 'colord cannot be purged (it takes gnome-control-center with it) '
                'and localsearch is a Depends of nautilus, so their daemons are '

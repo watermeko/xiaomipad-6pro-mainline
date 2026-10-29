@@ -154,8 +154,19 @@ enrol_finished (GObject *source, GAsyncResult *result, gpointer user_data)
     error = g_steal_pointer (&self->enrol_error);
   } else if (!valid || cancelled) {
     g_clear_error (&error);
-    error = fpi_device_error_new_msg (self->enrol_existing ? FP_DEVICE_ERROR_DATA_FULL : FP_DEVICE_ERROR_GENERAL,
-                                      self->enrol_existing ? "Only one enrolled finger per user is supported" :
+    /* DATA_FULL is wrong here twice over: nothing is full, and the desktop
+     * replaces the message with "Fingerprint device storage is full", which
+     * sends the user looking for space that is not the problem.  The real
+     * reason is that 1:N identification is not implemented (fprintd verifies
+     * gallery[0] when the device has no IDENTIFY feature), so a second
+     * template would never match at login.  GENERAL carries this text through
+     * to the dialog instead. */
+    error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                      self->enrol_existing ?
+                                      "A fingerprint is already enrolled. This build supports one "
+                                      "finger per account because identification against several "
+                                      "templates is not implemented; delete the enrolled "
+                                      "fingerprint in Settings before enrolling a different finger." :
                                       "OEM enrollment did not finish with confirmed cleanup");
   } else if (load_enrolled_database (self, &error)) {
     print = g_steal_pointer (&self->enrolled_print);

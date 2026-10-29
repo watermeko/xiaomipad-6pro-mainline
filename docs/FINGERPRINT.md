@@ -45,9 +45,70 @@ lock screen. The normal password-login stack is preserved, so password login
 remains the fallback. The presence of the Settings row or a running service does
 not demonstrate successful enrollment or unlock.
 
-Another enrollment is refused while a finger is already stored for this
-account. If intentionally replacing it, use the Settings deletion control first;
-do not remove private files to force re-enrollment.
+### One finger per account, and why
+
+Enrolling a second finger is refused while one is stored. The desktop reports
+this as **"Fingerprint device storage is full"**, which is wrong: nothing is
+full, and the template is 772 KB. The real reason is in how verification works.
+
+`pam_fprintd` asks fprintd to verify "any" enrolled print. fprintd then does one
+of two things:
+
+| prints enrolled | device implements `IDENTIFY` | what happens |
+|---|---|---|
+| 1 | either | verifies that one print |
+| 2+ | yes | 1:N identification over the whole gallery |
+| 2+ | **no** | **verifies `gallery[0]` only** |
+
+This TOD driver does not implement 1:N identification, because the OEM runtime
+matches one exported database per sensor capture. So with two enrolled fingers
+the second would enroll successfully and then never match at login — a template
+that only takes up space and misleads. The refusal exists to prevent that, not
+to save storage. The misleading message is a bug in how the refusal is reported;
+it is fixed in the driver source and ships with the next TOD rebuild.
+
+**To use a different finger**, delete the stored one first and enroll the other:
+
+1. **Settings → System → Users → Fingerprint Login**, then use the delete control.
+2. Enroll the finger you want.
+
+`fprintd-delete USERNAME --finger right-index-finger` does the same from a
+terminal. Delete and re-enroll works in either order; the machine credential and
+Gatekeeper handle in `/var/lib/liuqin-fingerprint/` are per account, so they are
+reused and nothing else has to be recreated.
+
+**To get 1:N, two things are needed**: a TOD `identify` implementation, and an
+OEM runtime mode that matches several databases from one capture. The current
+runtime takes exactly one (`--match-single DATABASE`), so this is a real feature
+gap rather than a policy flag.
+
+The message itself is already fixed in the driver source, and the fix is shipped
+in the current package: the driver stopped using `FP_DEVICE_ERROR_DATA_FULL` for
+this refusal, so the desktop shows the real reason instead of "storage is full".
+Rebuilding the TOD against the tablet's own libfprint without installing a newer
+dev package is described in
+[the component reference](../device/fingerprint/oem/README.md#rebuilding-only-the-tod-when-the-dev-package-would-move-the-abi).
+
+## Fingerprint for sudo and polkit
+
+Out of the box the fingerprint authenticates the **login and lock screen only**.
+`sudo`, `pkexec` and the desktop's privileged-action dialogs still ask for the
+Linux password, because `pam_fprintd` is wired into the GDM stack alone.
+
+To let the enrolled finger satisfy every PAM prompt on this tablet:
+
+```sh
+sudo sh device/tweaks/enable-fingerprint-pam.sh           # enable
+sudo sh device/tweaks/enable-fingerprint-pam.sh --dry-run # inspect first
+sudo sh device/tweaks/enable-fingerprint-pam.sh --revert  # password only again
+```
+
+It runs the standard `pam-auth-update --enable fprintd`, which puts
+`pam_fprintd.so` at the top of `common-auth` with `default=ignore`. That means a
+failed or absent fingerprint falls through to the password modules, so the
+password never stops working. What changes is that a finger can now authorise
+`sudo` — which is the point, and is a decision about this device's threat model.
+Both `sudo` and `polkit-1` include `common-auth`, so one change covers both.
 
 ## Passwords and existing identities
 

@@ -109,3 +109,55 @@ gnome-calendar
 # libedataserver client libraries, and gnome-shell, gdm3 and ubuntu-session
 # link those.  Purging it cascades into all three; only the server-side
 # daemons go away.
+
+[mask-user]
+# Per-user units and extensions the session Wants but this tablet has no use
+# for.  These are masked in the live user's systemd --user instance (or
+# disabled through the extension API), not in /etc: they belong to a session,
+# and a different account on the same tablet may legitimately want them.
+#
+# Every entry below was measured on the 8 GB unit with the session idle.
+# Together they are ~235 MB of the 1390 MB baseline.
+
+# --- settings daemons for hardware that does not exist --------------------
+# 72 MB.  gnome-session-basic-services.target Wants these; none is a Requires,
+# so masking them does not fail the session.  Verified after masking: the
+# power key, volume keys, the magnetic keyboard, rfkill, auto-rotation and the
+# disk mounts all still work.
+gsd:org.gnome.SettingsDaemon.Wwan.service
+gsd:org.gnome.SettingsDaemon.Smartcard.service
+gsd:org.gnome.SettingsDaemon.Sharing.service
+gsd:org.gnome.SettingsDaemon.PrintNotifications.service
+gsd:org.gnome.SettingsDaemon.UsbProtection.service
+# gsd-xsettings exists only to publish XSETTINGS and clipboard integration for
+# X11 clients.  With the X11 compatibility layer unused (see below) it has no
+# client to serve.
+gsd:org.gnome.SettingsDaemon.XSettings.service
+
+# --- gvfs volume monitors for protocols this tablet cannot be a host for --
+# 36 MB.  afc is iOS, gphoto2 is a PTP camera, mtp is a USB-connected Android
+# device, goa is the online-accounts volume that has no backend left once
+# evolution-data-server is purged.  gvfs-udisks2-volume-monitor is NOT here:
+# it is how internal storage and a USB stick appear in Files.
+gvfs:gvfs-afc-volume-monitor.service
+gvfs:gvfs-gphoto2-volume-monitor.service
+gvfs:gvfs-mtp-volume-monitor.service
+gvfs:gvfs-goa-volume-monitor.service
+
+# --- shell extensions ----------------------------------------------------
+# Measured one at a time; each runs a whole GJS application of its own.
+#
+# 77 MB: ding@rastersoft.com draws icons on the desktop.  Disabling it costs
+# the desktop icons only; nautilus (Files) still works, the dock still works.
+extension:ding@rastersoft.com
+# 99 MB: ubuntu-appindicators@ubuntu.com hosts StatusNotifier/AppIndicator tray
+# icons.  It is the largest single item found in the second pass, and this
+# image ships no application that uses the protocol.  An account that installs
+# one (Nextcloud, Steam, a chat client) can re-enable it:
+#   gnome-extensions enable ubuntu-appindicators@ubuntu.com
+extension:ubuntu-appindicators@ubuntu.com
+# The two snapd Shell extensions are shell-side halves of snapd, which the
+# [purge] section removes.  They stay ACTIVE regardless and register a search
+# provider and a prompting UI for a package manager that is not installed.
+extension:snapd-prompting@canonical.com
+extension:snapd-search-provider@canonical.com

@@ -37,8 +37,60 @@ v0.6.0 在首次设置后自动支持第一个普通本地账号（UID 1000）�
 指纹不可用时仍可使用密码。设置项出现、服务启动或传感器节点存在，都不等于
 录入和解锁已经成功。
 
-该账号已有指纹时，再次录入会被拒绝。如果确实要更换手指，先使用设置页的删除
-功能；不要删除私有文件来强制重新录入。
+### 每个账号一枚手指，以及原因
+
+账号里已有指纹时，再录一枚会被拒绝。桌面把这件事显示成**「Fingerprint device
+storage is full」（指纹设备存储已满）**，这是错的：没有任何东西满，模板只有 772 KB。
+真实原因在验证路径里。
+
+`pam_fprintd` 让 fprintd 去验证「任意」已注册指纹，fprintd 随后只有两种做法：
+
+| 已录指纹数 | 设备实现 `IDENTIFY` | 结果 |
+|---|---|---|
+| 1 | 无所谓 | 验证这一枚 |
+| 2 枚以上 | 是 | 对整个 gallery 做 1:N 识别 |
+| 2 枚以上 | **否** | **只验证 `gallery[0]`，第一枚** |
+
+本 TOD 驱动没有实现 1:N 识别，因为 OEM 运行时每次采集只能匹配**一个**导出的数据库。
+所以录第二枚指纹会「录入成功」，然后登录时永远匹配不上——一个只占空间还会误导人的
+模板。拒绝是为了防止这种状态，不是为了省存储。那句误导的提示是「拒绝原因如何上报」
+的 bug，已在驱动源码里修正，随下一次 TOD 重编发布。
+
+**要换手指**，先删掉已有的，再录新的：
+
+1. **设置 → 系统 → 用户 → 指纹登录**，用删除控件。
+2. 录入你想用的手指。
+
+命令行等价操作：`fprintd-delete 用户名 --finger right-index-finger`。先删再录的顺序随意；
+`/var/lib/liuqin-fingerprint/` 里的机器凭据和 Gatekeeper handle 是按账号的，会被复用，
+其他东西不需要重建。
+
+**要做到 1:N**，需要两件事：TOD 实现 `identify`，以及 OEM 运行时支持「一次采集匹配多个
+数据库」。当前运行时只接受一个（`--match-single DATABASE`），所以这是真实的功能缺口，
+不是一个策略开关。
+
+提示语本身已经在驱动源码里修好，并已随当前安装包发布：驱动不再对这种拒绝使用
+`FP_DEVICE_ERROR_DATA_FULL`，所以桌面会显示真实原因，而不是「存储已满」。如何在不安装
+更新版 dev 包的前提下、对着平板自己的 libfprint 重编 TOD，见
+[组件说明](../device/fingerprint/oem/README.md#rebuilding-only-the-tod-when-the-dev-package-would-move-the-abi)。
+
+## 指纹用于 sudo 和 polkit
+
+默认情况下指纹只用于**登录与锁屏**。`sudo`、`pkexec` 以及桌面的特权操作对话框仍然要求
+Linux 密码，因为 `pam_fprintd` 只接在 GDM 的 PAM 栈里。
+
+想让已录入的手指满足本机所有 PAM 提示：
+
+```sh
+sudo sh device/tweaks/enable-fingerprint-pam.sh           # 启用
+sudo sh device/tweaks/enable-fingerprint-pam.sh --dry-run # 先看栈
+sudo sh device/tweaks/enable-fingerprint-pam.sh --revert  # 改回仅密码
+```
+
+它执行标准的 `pam-auth-update --enable fprintd`，把 `pam_fprintd.so` 放到
+`common-auth` 最前面，并带 `default=ignore`。这意味着指纹失败或没有手指时会**落到密码
+模块**，所以密码永远仍然可用。改变的是「手指现在可以授权 sudo」——这正是目的，也是对本机
+威胁模型的一个决定。`sudo` 和 `polkit-1` 都 include `common-auth`，所以一处改动两者都覆盖。
 
 ## 密码和旧身份
 

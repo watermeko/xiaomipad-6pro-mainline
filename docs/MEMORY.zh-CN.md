@@ -141,6 +141,71 @@ sudo apt-get install -y ./google-chrome-stable_current_arm64.deb
 装什么，镜像就是不带浏览器，由用户自选。我**刻意没有**把任何浏览器写进 `[purge]` 或
 `[keep]`——这是用户决定而不是产品决定，何况两个候选差了一倍包数和一倍内存。
 
+## 还能再省多少：第二轮实测
+
+上一轮裁剪把空闲会话降到 1406 MB。第二轮专门找剩下的部分，每一改动都在平板上实测过才保留。
+全部写在 `device/configs/liuqin-root-trim.txt` 的 `[mask-user]` 段，由
+`device/tweaks/apply-root-tweaks.sh --user <账户>` 应用。
+
+| 改动 | 省下 | 代价 |
+|---|---:|---|
+| 屏蔽 `gsd-{wwan,smartcard,sharing,print-notifications,usb-protection}` | 72 MB | 这台平板没有对应硬件；它们都是 `Wants` 不是 `Requires` |
+| 屏蔽 `gsd-xsettings` | （含在 72 里） | 只为 X11 客户端提供 XSETTINGS，而 X11 层本来就不用 |
+| 屏蔽 `gvfs-{afc,gphoto2,mtp,goa}-volume-monitor` | 36 MB | 无法作为 iOS/PTP/MTP 主机；goa 的在线账户后端已随 EDS 一起删掉 |
+| 关闭 `ding@rastersoft.com` | 77 MB | 桌面图标；文件管理器和 dock 不受影响 |
+| 关闭 `ubuntu-appindicators@ubuntu.com` | 99 MB | StatusNotifier 托盘图标；这个镜像里没有任何应用使用该协议 |
+| 关闭 `snapd-prompting`、`snapd-search-provider` | 很小 | 它们为已被删除的包管理器保持 ACTIVE |
+| **合计** | **约 212 MB** | 1406 → **1194 MB**（关掉终端后） |
+
+最后两行是在前几项应用**之后**才发现的：`ding` 会把它俩盖在同一个统计桶里。那个
+99 MB 的托盘宿主是整个会话里最大的单个进程，比合成器自己的辅助进程还大——在以后假设
+「小扩展就是小」之前，这个数据值得记住。
+
+有两项调查过但**放弃**了，因为数据不支持那点风险：
+
+- **`Xwayland` + `mutter-x11-frames`（合计 117 MB）**。杀掉 `mutter-x11-frames`
+  有效且不会自启；但 `Xwayland` 会按需重启——它由 Mutter 在 X11 客户端连接时启动，
+  而 `gsd-xsettings` 不是触发者（屏蔽它没有任何变化）。当前会话里没有 X11 客户端，
+  说明它是被 Mutter 自己的启动路径拉起来的，不是按需。要关掉需要 Mutter 的实验特性，
+  上游并未稳定，所以留着。
+- **`ibus`（69 MB）**。这是中文输入法。一台 `screen-keyboard-enabled=true`、没有实体
+  键盘的平板必须留着，所以根本不是候选。
+
+剩下的部分及其保留理由：
+
+| 分组 | MB | 理由 |
+|---|---:|---|
+| `other`（约 95 个进程） | 291 | udisksd、NetworkManager、polkitd、iio-sensor-proxy、adbd、journald、gdm3、systemd 自身 |
+| `gnome-shell` | 311 | 合成器与桌面本身 |
+| X11 兼容层 | 121 | 见上 |
+| `gsd-*`（剩 11 个） | 111 | 电源、多媒体键、键盘、rfkill、声音、颜色、时间、无障碍、屏保、磁盘工具、清理 |
+| `xdg-desktop-portal*` | 113 | Flatpak、Waydroid 和沙箱应用都走这些 |
+| `ibus` | 71 | 中文输入法 |
+| 音频 | 67 | 四扬声器需要的 PipeWire + WirePlumber |
+| `gjs`（剩 2 个） | 56 | shell 的通知与屏保辅助进程 |
+| `gvfs` | 54 | 回收站、udisks2 卷监视、fuse、元数据 |
+
+### 第二轮的验证
+
+屏蔽和 dconf 键都确认能扛过重启：`gsd-*` 从 18 个降到 11 个，
+`gvfs-*-volume-monitor` 从 5 个降到 1 个（只剩 udisks2），四个扩展都报 `INITIALIZED`
+（已安装未运行的状态），会话正常启动，电源键、音量键、磁吸键盘、rfkill、自动旋转和
+磁盘挂载都仍然可用。
+
+让扩展列表扛过重启花了两处修正，都是**靠重启**而不是靠读代码发现的：
+`apply-root-tweaks.sh` 假定自己是 root，以普通账户身份运行会失败（会话单元必须跳过系统
+那一半，这就是 `--user-only` 的用途）；而按账户运行无法写 `/etc/dconf`，所以系统级 key
+仍归安装包负责，会话单元只做单元屏蔽。`liuqin-session-tweaks.service` 就是首次登录时
+做按账户这一半的单元——它覆盖的正是全新安装后 `gnome-initial-setup` 才创建的账户。
+
+### 唯一还能省更多的地方
+
+这次测量里 `zram` 是空闲的（`mm_stat` 显示没有存储任何页），因为刚开机的系统还
+没什么可回收。它的价值不在空闲数字——而在于浏览器量级的分配不再结束会话。再往后
+真正能省的是换更轻的会话（用 wlroots 合成器替掉 `gnome-shell` + `gsd` + `gjs`），
+[内存说明](MEMORY.zh-CN.md#换掉-gnome-值不值) 里已经估过约 600 MB——代价是作废
+本项目长在 GNOME 里的那些集成。
+
 ## 换掉 GNOME 值不值
 
 在这台机器上实测，内核之上的整个 GNOME 栈约 755 MB。wlroots 一类会话

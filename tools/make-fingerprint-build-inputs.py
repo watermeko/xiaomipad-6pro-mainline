@@ -41,12 +41,17 @@ def build(source, output):
     if json.loads(files["firmware/SHA256.json"]) != expected:
         raise ValueError("firmware manifest differs from reviewed stock")
     names = {"fpcliu.mdt", *(f"fpcliu.b{i:02d}" for i in range(9))}
-    if set(expected) != names:
-        raise ValueError("expected exactly ten TA hashes")
+    # Every ROM identity must be exactly ten files, and the public input's own
+    # bytes must reproduce each of them.
+    identities = expected["sets"] if "sets" in expected else [{"files": expected}]
+    for entry in identities:
+        if set(entry["files"]) != names:
+            raise ValueError("expected exactly ten TA hashes per identity")
     for name in names:
         value = files.pop("firmware/" + name)
-        if hashlib.sha256(value).hexdigest() != expected[name]:
-            raise ValueError("r4 TA hash mismatch")
+        actual = hashlib.sha256(value).hexdigest()
+        if not any(entry["files"][name] == actual for entry in identities):
+            raise ValueError("r4 TA hash matches no reviewed identity: " + name)
     info = json.loads(files["CANDIDATE.json"])
     for key in ("linux_username", "boot_image_sha256", "recovery_image_sha256", "actual_biometric_acceptance"):
         info.pop(key, None)

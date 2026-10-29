@@ -32,9 +32,16 @@ class ReleaseTests(unittest.TestCase):
         self.cache.mkdir(mode=0o700)
         self.data = {name: (name + " fixture").encode() for name in firmware.NAMES}
         self.hashes = {name: hashlib.sha256(data).hexdigest() for name, data in self.data.items()}
-        (self.cache / "SHA256.json").write_text(json.dumps(self.hashes))
+        self.write_manifest([("TEST-ROM", self.hashes)])
         self.mountpoint = self.base / "mountpoint"
         self.mountpoint.mkdir()
+
+    def write_manifest(self, sets):
+        """Write a schema-2 firmware manifest from [(rom, {name: digest})]."""
+        (self.cache / "SHA256.json").write_text(json.dumps({
+            "schema": 2,
+            "sets": [{"rom": rom, "files": files} for rom, files in sets],
+        }))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -86,19 +93,58 @@ class ReleaseTests(unittest.TestCase):
         prior = self.cache / firmware.NAMES[0]
         prior.write_bytes(b"existing-invalid-cache")
         self.data[firmware.NAMES[-1]] = b"wrong stock image"
-        with self.assertRaisesRegex(RuntimeError, "stock FPC firmware hash mismatch"):
+        # The message names the mismatch as a whole-set decision and shows the
+        # two files that distinguish a release, so a report says what to compare.
+        with self.assertRaisesRegex(RuntimeError,
+                                    "matches none of the 1 known ROM identities"):
             self.provision()
         self.assertFalse(self.mountpoint.exists())
         self.assertEqual(prior.read_bytes(), b"existing-invalid-cache")
         self.assertEqual({path.name for path in self.cache.iterdir()}, {prior.name, "SHA256.json"})
 
     def test_manifest_cannot_expand_extraction(self):
+        # A set has to be exactly the ten known names; an extra entry that would
+        # widen what gets copied out of modem_a is refused before any mount.
         self.hashes["../secret"] = "0" * 64
-        (self.cache / "SHA256.json").write_text(json.dumps(self.hashes))
+        self.write_manifest([("TEST-ROM", self.hashes)])
         with patch.object(firmware.subprocess, "run") as command:
             with self.assertRaises(ValueError):
                 firmware.provision(self.cache)
             command.assert_not_called()
+
+    def test_a_second_identity_is_accepted_as_a_whole_set(self):
+        # Two releases, distinguishable only in two files.  A unit carrying the
+        # second release must be accepted, and must be accepted as that set.
+        other = dict(self.hashes)
+        for name in ("fpcliu.mdt", "fpcliu.b08"):
+            other[name] = hashlib.sha256(("second " + name).encode()).hexdigest()
+        second = {name: ("second " + name).encode() if name in ("fpcliu.mdt", "fpcliu.b08")
+                  else self.data[name] for name in firmware.NAMES}
+        self.write_manifest([("ROM-1", self.hashes), ("ROM-2", other)])
+        for name, data in second.items():
+            (self.cache / name).write_bytes(data)
+        with patch.object(firmware.subprocess, "run") as command:
+            firmware.provision(self.cache)
+            command.assert_not_called()          # cache already complete
+        self.assertEqual(firmware.matching_identity(self.cache,
+                         firmware.checked_hashes(self.cache))[0], "ROM-2")
+
+    def test_a_unit_matching_no_identity_is_refused(self):
+        # Newest header from ROM-2 with ROM-1's body: no set describes it.
+        other = dict(self.hashes)
+        other["fpcliu.mdt"] = hashlib.sha256(b"second fpcliu.mdt").hexdigest()
+        other["fpcliu.b08"] = hashlib.sha256(b"second fpcliu.b08").hexdigest()
+        self.write_manifest([("ROM-1", self.hashes), ("ROM-2", other)])
+        for name, data in self.data.items():
+            (self.cache / name).write_bytes(data)
+        (self.cache / "fpcliu.mdt").write_bytes(b"second fpcliu.mdt")
+        self.assertIsNone(firmware.matching_identity(self.cache,
+                          firmware.checked_hashes(self.cache)))
+
+    def test_duplicate_identities_are_refused(self):
+        self.write_manifest([("ROM-1", self.hashes), ("ROM-1-copy", self.hashes)])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            firmware.checked_hashes(self.cache)
 
     def test_root_staging_has_no_account_services_or_credentials(self):
         payload = self.base / "payload"

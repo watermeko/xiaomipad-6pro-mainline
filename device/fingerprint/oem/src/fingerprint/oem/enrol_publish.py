@@ -94,11 +94,14 @@ def main():
         lock = os.open(device_store / ".operation.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         target = device_store / format(finger, "x")
-        # The current TOD Verify path selects one print; 1:N Identify is not
-        # implemented. Keep the initial usable scope to one finger per user.
+        # The TOD verify path matches one exported database, and 1:N Identify is
+        # not implemented, so fprintd falls back to gallery[0] when a device has
+        # no FP_DEVICE_FEATURE_IDENTIFY.  A second print would therefore never
+        # be selected at login; refuse instead of publishing a dead template.
         if any(os.path.lexists(device_store / format(value, "x")) for value in range(1, 11)):
             print("oem_print_publication=REFUSED existing_print_preserved=1 "
-                  "scope=one_finger_per_user touch_not_collected=1", file=sys.stderr)
+                  "reason=one_finger_limit identification_implemented=0 "
+                  "touch_not_collected=1", file=sys.stderr)
             return 2
         pending = Path("/var/lib/liuqin-fingerprint/pending") / user.pw_name
         private_directory(pending)

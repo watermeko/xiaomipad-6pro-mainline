@@ -155,8 +155,15 @@ def enrol(username, output, runtime):
     else:
         raise ValueError("unsupported account profile")
     prints = FPRINT_ROOT / username / "fpc1264_oem" / "liuqin-fpc1264-oem"
+    # One template per account, because the TOD verify path matches a single
+    # exported database and 1:N identification is not implemented: fprintd
+    # falls back to gallery[0] when a device lacks FP_DEVICE_FEATURE_IDENTIFY,
+    # so a second enrolled finger could never match at login.  The driver used
+    # to report this as DATA_FULL, which the desktop renders as "storage is
+    # full" - see fpc1264-oem.c.
     if any(os.path.lexists(prints / finger) for finger in "123456789a"):
-        print("native_enrol=REFUSED existing_template=1", flush=True)
+        print("native_enrol=REFUSED existing_template=1 reason=one_finger_limit "
+              "identification_implemented=0", flush=True)
         return 2
     if not output.is_absolute() or output.parent.resolve() != output.parent or os.path.lexists(output):
         raise ValueError("output must be a new private absolute path")

@@ -78,6 +78,24 @@ def build_deb(out):
         os.chmod(libdir / 'apply-root-tweaks.sh', 0o755)
         shutil.copytree(payload, libdir / 'payload')
 
+        # The per-account half.  postinst covers the accounts that exist at
+        # install time; this unit covers the first login after a fresh install,
+        # when gnome-initial-setup has just created one.
+        bindir = root / 'usr/local/libexec'
+        bindir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(PROJECT / 'device/tweaks/liuqin-session-tweaks.sh',
+                        bindir / 'liuqin-session-tweaks')
+        os.chmod(bindir / 'liuqin-session-tweaks', 0o755)
+        unitdir = root / 'usr/lib/systemd/user'
+        unitdir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(PROJECT / 'device/tweaks/liuqin-session-tweaks.service',
+                        unitdir / 'liuqin-session-tweaks.service')
+        os.chmod(unitdir / 'liuqin-session-tweaks.service', 0o644)
+        wanted = root / 'usr/lib/systemd/user/default.target.wants'
+        wanted.mkdir(parents=True, exist_ok=True)
+        os.symlink('../../../lib/systemd/user/liuqin-session-tweaks.service',
+                   wanted / 'liuqin-session-tweaks.service')
+
         # dpkg-deb builds one tree whose DEBIAN/ directory is the control area.
         control = root / 'DEBIAN'
         control.mkdir()
@@ -105,11 +123,32 @@ def build_deb(out):
         # from under a running session belongs to an explicit liuqin-root-trim.
         postinst = control / 'postinst'
         postinst.write_text(
-            '#!/bin/sh\nset -e\n'
-            'if [ "$1" = configure ]; then\n'
-            '\tsh /usr/lib/liuqin/apply-root-tweaks.sh / --no-purge || exit 1\n'
+            '#!/bin/sh\n'
+            'set -e\n'
+            '# The [mask-user] section applies per account, so it is applied here for\n'
+            '# every human account that already exists.  An account created later\n'
+            '# (gnome-initial-setup on a fresh install) gets it from\n'
+            '# liuqin-session-tweaks, which runs in that session.\n'
+            'apply_user() {\n'
+            '\tacct=$1\n'
+            '\t[ -n "$acct" ] || return 0\n'
+            '\tsh /usr/lib/liuqin/apply-root-tweaks.sh / --no-purge --user "$acct" || {\n'
+            '\t\techo "liuqin-memory-tweaks: per-user tweaks failed for $acct" >&2\n'
+            '\t\treturn 1\n'
+            '\t}\n'
+            '}\n'
+            'case $1 in\n'
+            'configure)\n'
+            '\tsh /usr/lib/liuqin/apply-root-tweaks.sh / --no-purge --no-user || exit 1\n'
+            '\t# Every human account, by uid range, so a system account can never be\n'
+            '\t# picked up by accident.\n'
+            '\tawk -F: \'$3 >= 1000 && $3 < 60000 { print $1 }\' /etc/passwd |\n'
+            '\t\twhile read -r account; do apply_user "$account" || exit 1; done\n'
             '\tif [ -d /run/systemd/system ]; then systemctl daemon-reload || :; fi\n'
-            'fi\n')
+            '\tcommand -v dconf >/dev/null && dconf update || :\n'
+            '\t;;\n'
+            'esac\n'
+            'exit 0\n')
         os.chmod(postinst, 0o755)
 
         # Reproducible: dpkg-deb copies filesystem timestamps into the

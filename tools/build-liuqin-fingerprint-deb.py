@@ -64,7 +64,43 @@ def read_bundle(bundle, destination):
         raise ValueError("bundle manifest hash mismatch")
 
 
-def prepare_payload(payload, version):
+def firmware_identities(manifest):
+    """Every accepted {name: digest} set in a firmware manifest.
+
+    Schema 2 lists several ROM identities and schema 1 is a single flat map, so
+    both are read here rather than in three places that could disagree.
+    """
+    if "sets" in manifest:
+        return [entry["files"] for entry in manifest["sets"]]
+    return [manifest]
+
+
+def verify_rebuilt_tod(path):
+    """A TOD built from this repository's driver source, not from the bundle.
+
+    The bundle's copy is a hash-pinned prebuilt binary; when the driver source
+    changes, the only way to ship it is to rebuild against the same libfprint
+    ABI the tablet runs.  That build cannot be reproduced on an amd64 host, so
+    the artifact is accepted here only after proving it is the same shape: an
+    AArch64 shared object exporting the TOD entry point and needing exactly the
+    libraries the installed runtime provides.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("rebuilt TOD is not a regular file")
+    header = path.read_bytes()[:20]
+    if header[:4] != b"\x7fELF" or header[4] != 2 or header[18:20] != b"\xb7\x00":
+        raise ValueError("rebuilt TOD is not an AArch64 ELF64 shared object")
+    readelf = shutil.which("readelf") or "/usr/bin/readelf"
+    needed = subprocess.check_output([readelf, "-d", str(path)], text=True)
+    for library in ("libfprint-2-tod.so.1", "libgio-2.0.so.0", "libglib-2.0.so.0"):
+        if library not in needed:
+            raise ValueError("rebuilt TOD does not link " + library)
+    if b"fpi_device_class_auto_initialize_features" not in path.read_bytes():
+        raise ValueError("rebuilt TOD is not the FPC1264 driver")
+    return sha(path)
+
+
+def prepare_payload(payload, version, rebuilt_tod=None):
     info = json.loads((payload / "CANDIDATE.json").read_text())
     if (info["kernel_release"] != KERNEL_RELEASE or
             info["enrollment_interface"] != "fprintd" or info["deployment_mode"] != "installed"):
@@ -80,10 +116,33 @@ def prepare_payload(payload, version):
         raise ValueError("module ABI differs from release kernel")
     expected = json.loads((OEM / "firmware/SHA256.json").read_text())
     actual = json.loads((payload / "firmware/SHA256.json").read_text())
-    if actual != expected or set(expected) != FIRMWARE_NAMES:
-        raise ValueError("OEM TA hashes differ from the reviewed stock firmware")
+    # The bundle is a fixed, hash-pinned historical artifact: it carries the
+    # manifest of the day it was built, which is a single ROM identity.  The
+    # repository may have learned about more releases since.  So the rule is
+    # containment, not equality - every identity the bundle claims must be one
+    # the repository still reviews, and the shipped payload then carries the
+    # full repository manifest so a unit on a newer ROM is accepted.
+    reviewed = firmware_identities(expected)
+    for files in reviewed:
+        if set(files) != FIRMWARE_NAMES:
+            raise ValueError("a reviewed firmware identity is not ten files")
+    for files in firmware_identities(actual):
+        if set(files) != FIRMWARE_NAMES:
+            raise ValueError("the bundle firmware identity is not ten files")
+        if files not in reviewed:
+            raise ValueError("OEM TA hashes differ from the reviewed stock firmware")
+    shutil.copyfile(OEM / "firmware/SHA256.json", payload / "firmware/SHA256.json")
+    (payload / "firmware/SHA256.json").chmod(0o644)
     if any((payload / "firmware" / name).exists() for name in FIRMWARE_NAMES):
         raise ValueError("public build inputs must not distribute OEM TA bytes")
+    if rebuilt_tod is not None:
+        # Replacing the bundle's binary is a deliberate act: the driver source in
+        # this repository is what gets built, and its hash is recorded in the
+        # package metadata so the shipped bytes are traceable to that source.
+        digest = verify_rebuilt_tod(rebuilt_tod)
+        shutil.copyfile(rebuilt_tod, payload / "tod/libfprint-tod-fpc1264-oem.so")
+        (payload / "tod/libfprint-tod-fpc1264-oem.so").chmod(0o755)
+        info["rebuilt_tod_sha256"] = digest
     shutil.copyfile(OEM / "firmware/NOTICE", payload / "firmware/NOTICE")
     # Overlay current Python integration only; validated C binaries and their
     # matching C/source archives remain byte-for-byte from the reviewed bundle.
@@ -111,6 +170,15 @@ def prepare_payload(payload, version):
                      native_uid=0x60000000 | 1000, firmware_source="modem_a-read-only",
                      release_version=version, binary_bundle_sha256=BUNDLE_SHA256,
                      binary_revision=info["revision"])
+    if "rebuilt_tod_sha256" in info:
+        # The TOD in this package was built from the driver source in this
+        # repository, not taken from the bundle.  Record which source and which
+        # bytes, so a reader can tell the two cases apart.
+        candidate["rebuilt_tod_sha256"] = info["rebuilt_tod_sha256"]
+        candidate["rebuilt_tod_source"] = (
+            "device/fingerprint/oem/src/fingerprint/libfprint-tod/fpc1264-oem.c")
+        candidate["rebuilt_tod_bundle_baseline"] = VERIFIED_COMPONENTS[
+            "tod/libfprint-tod-fpc1264-oem.so"]
     (payload / "CANDIDATE.json").write_text(json.dumps(candidate, indent=2) + "\n")
     manifest = {path.relative_to(payload).as_posix(): sha(path)
                 for path in sorted(payload.rglob("*")) if path.is_file()
@@ -150,7 +218,7 @@ def stage_root(payload, root, info):
     enable.symlink_to("/usr/lib/systemd/system/liuqin-fpc-stable-module.service")
 
 
-def build(bundle, out, version):
+def build(bundle, out, version, rebuilt_tod=None):
     if not re.fullmatch(r"[0-9][0-9A-Za-z.+~_-]*", version):
         raise ValueError("invalid package version")
     out.mkdir(parents=True, exist_ok=True)
@@ -163,7 +231,7 @@ def build(bundle, out, version):
         payload, root = work / "payload", work / "root"
         payload.mkdir()
         read_bundle(bundle, payload)
-        info, manifest = prepare_payload(payload, version)
+        info, manifest = prepare_payload(payload, version, rebuilt_tod)
         stage_root(payload, root, info)
         control = root / "DEBIAN"
         control.mkdir()
@@ -206,8 +274,11 @@ def main():
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--tod", type=Path,
+                        help="TOD .so rebuilt from device/fingerprint/oem/src/fingerprint/"
+                             "libfprint-tod/fpc1264-oem.c; replaces the bundle's prebuilt copy")
     args = parser.parse_args()
-    build(args.bundle, args.out, args.version)
+    build(args.bundle, args.out, args.version, args.tod)
 
 
 if __name__ == "__main__":

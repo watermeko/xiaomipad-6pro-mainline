@@ -1,15 +1,34 @@
 FPC1264 trusted application: local-device provisioning only
 
-The ten hashes in SHA256.json identify fpcliu.mdt and fpcliu.b00 through
-fpcliu.b08 from Xiaomi Pad 6 Pro (liuqin) HyperOS OS2.0.6.0.VMYCNXM,
-Android 15, images/NON-HLOS.bin, FAT directory /image.
+SHA256.json lists the ten hashes of fpcliu.mdt and fpcliu.b00 through fpcliu.b08
+for every stock ROM this product has verified, one set per release:
+
+    OS2.0.6.0.VMYCNXM   Android 15, images/NON-HLOS.bin, FAT directory /image
+    OS3.0.7.0.VMYCNXM   Android 15, images/NON-HLOS.bin, FAT directory /image
+
+Two sets exist because Xiaomi re-signed the trusted application between those
+releases, and a tablet's modem_a carries whichever one its last stock update
+wrote. The two differ only in fpcliu.mdt (the ELF header and program headers)
+and fpcliu.b08 (the signature); the eight b00-b07 segments are byte-identical.
+
+A device is accepted only when it matches ONE set in full. Selecting a set per
+file would let a unit that matches no release be assembled out of two, giving an
+image whose header and signature do not describe its body. A unit matching no
+set disables the fingerprint service, exactly as before; holding several
+identities widens which stock images are accepted and does not make the check
+advisory.
+
+Adding a release is a deliberate act. Its ten hashes go into SHA256.json with
+the ROM version and the source they were read from, and every hash must be
+reproduced from that ROM's NON-HLOS.bin rather than copied off a device.
 
 These OEM binaries are not included in the public liuqin-fingerprint package;
 the project has not established permission to redistribute them. On the first
-normal boot, provision_firmware.py mounts this tablet's modem_a read-only and
-copies only these ten files, verifying every hash before use. Subsequent boots
-reuse the verified local cache. A missing/different stock image disables the
-fingerprint service without modifying modem_a or preventing password login.
+normal boot, provision_firmware.py mounts this tablet's modem_a read-only,
+chooses the identity the mounted image matches as a whole, and copies only these
+ten files after verifying every hash. Subsequent boots reuse the verified local
+cache. A missing or unrecognised stock image disables the fingerprint service
+without modifying modem_a or preventing password login.
 
 The files are generic OEM trusted applications, not fingerprints, enrollment
 credentials, device calibration or Android user data. This package creates no

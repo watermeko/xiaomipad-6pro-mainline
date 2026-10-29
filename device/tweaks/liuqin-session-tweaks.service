@@ -1,0 +1,19 @@
+[Unit]
+Description=Apply liuqin per-account tweaks (unit masks, extension list)
+Documentation=file:///usr/share/doc/liuqin/MEMORY.md
+# The session's own instance, so this runs as the account that is logging in.
+# It must not delay anything: the tweaks take effect on this same login because
+# systemd reads the unit masks before the units start, and dconf is read when
+# the shell builds its extension list.
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/liuqin-session-tweaks
+# A tablet that has had the trim list removed must not collect a failed unit,
+# and a mask that cannot be written is not worth ending a session over.
+SuccessExitStatus=0 1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

@@ -233,7 +233,11 @@ mkdir /mnt/install/native-root
 # makes a fresh install carry them, instead of leaving them to a second pass on
 # a booted system.  The purge is skipped: this userland has no dpkg, and the
 # tree is already trimmed by the image build.
-sh /usr/lib/liuqin/apply-root-tweaks.sh /mnt/install/native-root --no-purge ||
+# --no-user: the image carries no human account, so the [mask-user] section has
+# no session to write into.  It is applied per account on first login instead,
+# which is also the only place it can be applied without guessing which account
+# the user creates in gnome-initial-setup.
+sh /usr/lib/liuqin/apply-root-tweaks.sh /mnt/install/native-root --no-purge --no-user ||
 	die 'the root filesystem customisations did not apply'
 PERSIST_SRC=/run/persist sh /usr/lib/liuqin/provision.sh /mnt/install/native-root
 if [ "$rescue" = ENABLE-USB-RESCUE ]; then
