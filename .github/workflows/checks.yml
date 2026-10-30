@@ -34,6 +34,27 @@ jobs:
                       continue
                   subprocess.run(['sh', '-n', str(path)], check=True)
           PY
+      - name: Device overlay scripts are executable
+        run: |
+          # A script under /usr/local that git records as 100644 ships without
+          # its execute bit, and the unit that runs it dies with EACCES on every
+          # boot.  That is how liuqin-usb-gadget-watch silently stopped repairing
+          # the USB link after a cable event or a resume.  A fresh checkout has
+          # the recorded mode, so this is where the mistake is cheap to catch.
+          python3 - <<'PY'
+          import stat
+          from pathlib import Path
+          bad = []
+          for base in ('sbin', 'bin', 'libexec'):
+              for path in sorted(Path('device/root-overlay/usr/local', base).iterdir()):
+                  if not path.is_file() or not path.read_bytes().startswith(b'#!'):
+                      continue
+                  if not path.stat().st_mode & stat.S_IXUSR:
+                      bad.append(str(path))
+          if bad:
+              raise SystemExit('not executable: ' + ' '.join(bad))
+          print('every script in the device overlay is executable')
+          PY
       - name: Installer offline checks
         run: |
           sudo apt-get update

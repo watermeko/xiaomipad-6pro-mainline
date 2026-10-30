@@ -23,7 +23,6 @@ set -u
 UDC=/sys/class/udc/a600000.usb
 GADGET_UNIT=liuqin-usb-gadget.service
 ADBD_UNIT=liuqin-adbd.service
-[ -e "$UDC/state" ] || exit 0
 
 log() { logger -t liuqin-usb-gadget-watch "$*"; }
 
@@ -53,8 +52,30 @@ seen_up=0
 was_up=0
 offline_streak=0
 tick=0
+udc_present=0
 
 while sleep 3; do
+	if [ ! -e "$UDC/state" ]; then
+		# No cable, so no VBUS and no UDC: there is nothing to repair while the
+		# host cannot see us either.  Remember the outage so that the return is
+		# treated as a fresh attachment below.
+		udc_present=0
+		seen_up=0
+		was_up=0
+		offline_streak=0
+		tick=0
+		continue
+	fi
+
+	if [ "$udc_present" = 0 ]; then
+		# The controller came back after a suspend on battery or a replug.
+		# The configfs gadget was unbound together with the UDC and the kernel
+		# does not re-bind it, so build it once before watching the link.
+		udc_present=1
+		rebuild "the UDC came back" || true
+		continue
+	fi
+
 	state=$(cat "$UDC/state" 2>/dev/null) || continue
 
 	if [ "$state" = configured ]; then

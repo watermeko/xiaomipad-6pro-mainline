@@ -4,7 +4,11 @@ Documentation=file:///usr/local/sbin/liuqin-usb-gadget-watch
 # The gadget itself has to exist before its UDC state means anything.
 After=liuqin-usb-gadget.service
 Requires=liuqin-usb-gadget.service
-ConditionPathExists=/sys/class/udc/a600000.usb
+# No ConditionPathExists on the UDC: the controller disappears from
+# /sys/class/udc while no cable supplies VBUS, and a unit that cannot start
+# then is a unit that is not running when the cable comes back -- which is
+# exactly the state a suspend on battery leaves the tablet in. The watcher
+# waits for the UDC itself and binds the gadget when it returns.
 
 [Service]
 Type=simple
