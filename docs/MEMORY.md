@@ -9,7 +9,11 @@ This document is the evidence behind the trim lists in `device/configs/`:
 | `device/root-overlay/etc/systemd/zram-generator.conf` | swap geometry of the installed system |
 | `device/root-overlay/etc/systemd/**` symlinks to `/dev/null` | units masked without removing their package |
 
-## Measured baseline
+## Measured baseline (GNOME Shell, before the Plasma migration)
+
+The desktop is Plasma Mobile since 2026-10-30; this section is the GNOME Shell
+measurement that drove the original trim, kept because the purge decisions still
+reference it.  The Plasma numbers are in "Plasma Mobile migration" below.
 
 Xiaomi Pad 6 Pro, 8 GB SKU, `MemTotal` 6608256 kB (firmware reservations take the
 rest), Ubuntu 26.04, GNOME Shell 50.1, booted 10 minutes, one user, Settings
@@ -282,22 +286,46 @@ real step is a lighter session (a wlroots compositor instead of
 [Memory notes](../docs/MEMORY.md#is-a-non-gnome-desktop-worth-it) already size
 at ~600 MB — for the cost of the GNOME integration this project owns.
 
-## Is a non-GNOME desktop worth it?
+## Plasma Mobile migration (2026-10-30)
 
-Measured on this unit, the entire GNOME stack above the kernel is ~755 MB. A
-wlroots-class session (labwc or niri + waybar + foot) idles at ~100–150 MB, so
-the ceiling is ~600 MB — less than zram alone buys, and it would invalidate the
-parts of this project that live inside GNOME: the `gdm3` + fingerprint login
-path, `gnome-initial-setup` first boot, the dconf power policy, the patched
-`gnome-control-center` power panel, the on-screen keyboard and the 2× scaling
-policy. Replacing the distribution as well is a different order of work: the
-rootfs pipeline is built from an Ubuntu casper image
-(`tools/build-liuqin-ubuntu-desktop-rootfs.sh`).
+The session was GNOME Shell, then Plasma Mobile ran beside it, and the GNOME and
+Phosh sessions were then removed.  What that cost and bought, measured on the
+8 GiB unit:
 
-A cheaper order of operations, if GNOME is abandoned later: keep `gdm3` and the
-PAM stack (they are desktop-independent), add a wlroots session, and make it the
-default session while GNOME stays selectable. That is a session change, not a
-distribution change, and it does not touch the kernel or the rootfs pipeline.
+| Quantity | Before | After |
+|---|---:|---:|
+| Installed packages (`dpkg-query -W`) | 2288 | 2098 |
+| `/` used / free (32 GB root) | 13 G / 19 G | 13 G / 20 G |
+| `free -m` used after boot | 1390–2267 (see baseline) | 2579 |
+
+The disk figure is net: SDDM, Dolphin, Plasma Camera, Konsole, kcalc and kdialog
+were installed while the GNOME Shell stack, Phosh, IBus and the GNOME
+documentation/language packs were removed (the trim list's `[purge]` section is
+the exact set).
+
+Memory did **not** improve.  Idle per-process RSS after boot, measured with
+`ps -eo rss,comm` (RSS, not the PSS the baseline uses, so the two tables are not
+directly comparable): `plasmashell` 464 MB, `kwin_wayland` 241, `kded6` 160,
+`org_kde_powerdevil` 147, `polkit-kde-authentication-agent` 145,
+`kactivitymanagerd` 141, `xdg-desktop-portal` 138, `ksecretd` 136,
+`gmenudbusmenuproxy` 132, `xembedsniproxy` 132, `ksmserver` 125, `Xwayland` 98,
+`fcitx5` 77.  A PSS measurement and a review of the mask candidates
+(`kactivitymanagerd`, `gmenudbusmenuproxy`, `xembedsniproxy`, KWallet vs the
+gnome-keyring that is still installed for libsecret) is the next piece of work;
+none of them is masked in `device/configs/liuqin-root-trim.txt` yet because
+nothing has been measured against the idle baseline after masking.
+
+Two GNOME-only pieces had to move with the session rather than be deleted:
+
+- the stage-1 admission contract pinned `gdm3` and `gnome-shell` as the desktop
+  and `display-manager.service -> gdm3.service`; it now pins `sddm`,
+  `kwin_wayland`, `plasmashell`, `startplasmamobile` and
+  `display-manager.service -> sddm.service` (initramfs/init, native profile);
+- the power-key helper drove `org.gnome.ScreenSaver` and Mutter's DPMS.  It now
+  drives `org.freedesktop.ScreenSaver` (KWin owns it) and
+  `kscreen-doctor --dpms`, and PowerDevil is told `PowerButtonAction=0` so it
+  does not act on the same key.  Verified on the tablet: press → locked and
+  DPMS off, press → on-locked, press → off, press → on-locked.
 
 ## Reverting
 

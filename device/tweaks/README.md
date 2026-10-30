@@ -22,6 +22,18 @@ has two callers:
   `--no-purge` on `/` from its postinst, which is how a tablet installed from an
   older bundle gets the same files without a reflash.
 
+The per-account section (`[mask-user]`) speaks two entry kinds:
+
+| Entry | Effect |
+|---|---|
+| `unit:<unit>` | symlink the unit to `/dev/null` in the account's `systemd --user` instance |
+| `autostart:<file>` | write `~/.config/autostart/<file>` with `Hidden=true` |
+
+Both are idempotent and both are applied by `liuqin-session-tweaks.service`,
+which runs once per login.  The GNOME-era kinds (`gsd:`, `gvfs:`,
+`extension:`, and the `[mask-user-phosh]` section) were removed with the session:
+a mask is only useful for a unit the desktop actually starts.
+
 `stage-payload.sh` copies the three policy files into a payload directory
 beside the script, verifying each staged copy is byte-identical to its source.
 Both callers stage from it, so there is no second copy of the policy to drift.

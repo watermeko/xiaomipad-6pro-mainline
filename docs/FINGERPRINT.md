@@ -31,9 +31,20 @@ availability after reboot requires the matching kernel and modules to be
 persistently installed. That ordinary boot path has passed on this test unit.
 Build and installation details are in the [component reference](../device/fingerprint/oem/README.md).
 
-## Enroll through Ubuntu Settings
+## Enroll
 
-1. Open **Settings → System → Users → Fingerprint Login** for the configured
+The desktop is Plasma Mobile; System Settings → Users exposes fingerprint
+enrollment through fprintd.  The enrollment flow below was validated with the
+GNOME Settings UI this product shipped before the migration.  The same fprintd
+work is available without a GUI, which is the path to use if the KCM offers no
+fingerprint row:
+
+```sh
+fprintd-enroll            # enrolls the right index finger for the calling user
+fprintd-list "$USER"      # lists the stored prints
+```
+
+1. Open **System Settings → Users → Fingerprint** for the configured
    account. Unlock Settings if the normal system dialog requests it.
 2. Choose a finger and authorize enrollment in the system password dialog.
 3. Follow the native scan, lift/reposition and progress instructions until the
@@ -69,7 +80,8 @@ it is fixed in the driver source and ships with the next TOD rebuild.
 
 **To use a different finger**, delete the stored one first and enroll the other:
 
-1. **Settings → System → Users → Fingerprint Login**, then use the delete control.
+1. **System Settings → Users → Fingerprint** (or `fprintd-delete "$USER"`),
+   then use the delete control.
 2. Enroll the finger you want.
 
 `fprintd-delete USERNAME --finger right-index-finger` does the same from a
@@ -135,7 +147,7 @@ Password login remains available without a separate unlock application.
 Verification does not consume the old boot-local 18-hour enrollment authorization
 or ask for the Linux password through the legacy helper. The reboot test started
 at the regular login screen without any manual Keymaster negotiation or setup
-helper. Fingerprint login does not decrypt the password-encrypted GNOME login
+helper. Fingerprint login does not decrypt the password-encrypted login
 keyring; applications accessing its secrets may still request the keyring password.
 
 Placement sensitivity, latency, suspend/resume, long-term reliability and

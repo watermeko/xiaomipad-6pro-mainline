@@ -95,26 +95,21 @@ qca-swiss-army-knife 提交 `6df4dae3e2f5e4c2903f3cafd40996fc1b3639ce` 下的
 通过 `--vendor`、`--base-board` 和 `--out` 指定输入和新输出目录。
 原厂输入的获取说明与分发边界仍待完善；本工具不下载或分发固件。
 
-设备适配源码包括系统服务、音频配置、电源键支持、传感器补丁和 GNOME 设置程序补丁。
+设备适配源码包括系统服务、音频配置、电源键支持和传感器补丁。
 传感器源码版本记录在 `device/sensors/sources.manifest`。
 
-GNOME 设置程序的源码与补丁由 `device/gnome-control-center/source.json` 固定。
-主机需提供 Python 3.12、curl、patch、dpkg-dev 和 AArch64 binfmt 解释器，并准备好
-Ubuntu ARM64 根文件系统。先准备源码：
-
-```sh
-python3 tools/build-liuqin-settings.py --prepare-only
-```
-
-再执行 `sudo python3 tools/build-liuqin-settings.py --jobs 8`。构建使用独立挂载命名空间，
-不修改输入根文件系统。设备包构建器从 `out/gnome-control-center/` 读取程序与源码身份，
-不再依赖历史预编译的设置程序。
+桌面层是 Plasma Mobile，由 `tools/build-liuqin-native-root.sh` 的 `debs` 阶段连同
+`sddm` 一起安装，之后 trim 才清除 gdm3 与 gnome-shell。会话配置是文件而不是构建产物：
+`device/root-overlay/etc/sddm.conf.d/10-liuqin.conf` 与
+`device/root-overlay/etc/xdg/` 下的 Plasma 默认值。电源键短按策略存放在
+`io.github.liuqin.power`，用 `/usr/local/bin/liuqin-power-policy` 修改
+（本项目以前编译的 GNOME 设置程序补丁已经移除）。
 
 ### 输入准备与产物缓存
 
 `python3 tools/prepare-image-inputs.py run` 一次备齐 `build-liuqin-image.py`
 需要的全部输入并写出 `out/image-inputs.local.json`。音频拓扑、固件树等便宜的
-输入每次新鲜重建；传感器栈与 GNOME 设置程序这两个 QEMU 慢构建按来源指纹缓存
+输入每次新鲜重建；传感器栈这一个 QEMU 慢构建按来源指纹缓存
 在 `tools/local/artifacts-cache/`：输入未变时经 sha256 复验后直接复用，
 输入一变就自动重建。`check` 子命令只报告复用/重建，不动手。需要重建时
 会经 sudo 调用对应官方构建器（先 `sudo -v`）。

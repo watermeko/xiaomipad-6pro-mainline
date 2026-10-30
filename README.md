@@ -1,6 +1,6 @@
 # Ubuntu for Xiaomi Pad 6 Pro
 
-Run Ubuntu 26.04 on the Xiaomi Pad 6 Pro, with the GNOME desktop and a device-adapted kernel based on upstream Linux. [中文](README.zh-CN.md)
+Run Ubuntu 26.04 on the Xiaomi Pad 6 Pro, with the Plasma Mobile desktop and a device-adapted kernel based on upstream Linux. [中文](README.zh-CN.md)
 
 ## Latest Release and Recent Updates
 
@@ -8,7 +8,7 @@ Run Ubuntu 26.04 on the Xiaomi Pad 6 Pro, with the GNOME desktop and a device-ad
 
 Main updates since the initial open-source release:
 
-- **Native fingerprint login**: enroll in Ubuntu Settings → Users, then unlock the screen or log in after boot. Same-finger acceptance and other-finger rejection are verified; currently limited to the first account and one finger.
+- **Native fingerprint login**: enroll with `fprintd-enroll` (or the Users page of Plasma's System Settings), then unlock the screen or log in after boot. Same-finger acceptance and other-finger rejection are verified; currently limited to the first account and one finger.
 - **DP external display**: external picture, internal-display recovery after unplugging and USB recovery on reconnect are verified. Other adapters, DP audio and high refresh rates remain unverified.
 - **Dual boot and camera**: added an installation layout that preserves Android and a KernelSU module to return to Ubuntu, fixed startup failures caused by stock firmware, added experimental rear-camera support and fixed the speakers. See the installation notes below for dual-boot validation scope and the support table for camera limitations.
 - **Input, recording and charging**: fixed the magnetic keyboard touchpad, added touch-panel variants, USB OTG, single-microphone recording and charging authentication. The kernel configuration required by Waydroid is included; Waydroid remains experimental without end-to-end device acceptance.
@@ -143,6 +143,11 @@ process allocating 6720 MiB (more than `MemTotal`) completes at a 19.24:1
 compression ratio instead of ending the session. `docs/MEMORY.md` has the
 per-group numbers and the reason for every entry in the trim list.
 
+**Those numbers describe the GNOME session.** The desktop is Plasma Mobile since
+2026-10-30 and the trim list now purges the GNOME and Phosh sessions instead of
+masking parts of them; `docs/MEMORY.md` records the migration's measured effect
+on disk and packages, and the first Plasma idle numbers.
+
 ### If you are installing fresh
 
 Nothing extra to do once a bundle is published that includes these changes: the
@@ -212,7 +217,7 @@ Every step is a package name plus a boot image.
 sudo apt-get install snapd firefox                                    # put snap back
 sudo apt-get install fwupd cups cups-browsed modemmanager rsyslog \
     networkd-dispatcher switcheroo-control evolution-data-server gnome-calendar
-sudo rm /etc/systemd/user/localsearch-3.service /etc/systemd/system/colord.service
+sudo apt-get install gnome-shell gdm3 ubuntu-session                 # GNOME session back
 sudo rm /etc/systemd/zram-generator.conf                              # drop zram swap
 ```
 
@@ -246,7 +251,7 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Acknowledgments and Licensing
 
 This project builds on the kernel work of [sm8450-mainline](https://github.com/sm8450-mainline/linux),
-along with Ubuntu, GNOME, Freedreno and the Linux Qualcomm community.
+along with Ubuntu, KDE, GNOME and the Linux Qualcomm community.
 
 Original project code is MIT-licensed unless a file states otherwise. Linux and third-party components retain their own licenses;
 firmware is subject to its respective owners' terms. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

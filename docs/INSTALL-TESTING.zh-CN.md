@@ -282,6 +282,20 @@ python3 install.py --bundle . --serial DEVICE_SERIAL \
 
 `--android-boot` 可省略；省略时保存 ROM 自带的 `boot.img`。
 
+**同一次安装里创建首个账号。** 镜像使用 Plasma Mobile + SDDM，没有首次开机向导，
+因此账号由安装器在系统首次启动前创建。加 `--user` 并按提示输入密码（或用
+`--user-password-file` 指向首行为密码的文件）：
+
+```sh
+python3 install.py --bundle . --serial DEVICE_SERIAL \
+  --backup /path/to/new-private-backup --erase-userdata --layout dual \
+  --user 用户名
+```
+
+安装器用 `useradd` 建号、`chpasswd -e` 写入密码哈希、在 `linux_home` 上创建家目录，
+并把 SDDM 配成自动登录该账号。不加 `--user` 时系统会停在没有任何账号可登录的
+SDDM 登录界面。
+
 ## 双系统下的 Android
 
 双系统安装后的首次 Android 开机会重新格式化 `userdata` 与 `metadata`，需要数分钟。
@@ -339,6 +353,6 @@ Android 恢复路线仍待独立真机验证，不应将 Ubuntu 安装通过等�
 
 已有受支持的 split 布局时，可在 `--keep-home` 重装命令中用 `--no-backup` 替代 `--backup 路径`，明确跳过启动分区、persist 与 GPT 备份。该选项不允许首次分区或恢复分区表。默认安装仍执行备份。
 
-`--keep-home` 只保留独立 `/home`，仍会重建 Ubuntu 系统分区，旧账号配置与系统中的指纹模板/凭据会清除；首次设置时需重新创建账号并录入指纹。
+`--keep-home` 只保留独立 `/home`，仍会重建 Ubuntu 系统分区，旧账号配置与系统中的指纹模板/凭据会清除；安装时用 `--user` 重新建号，安装后再录入指纹。
 
 本版完整包同时附带 `liuqin_boot_ubuntu-v0.3.zip`、`dualboot-tools.zip` 和公开指纹构建输入；正常使用指纹无需再安装单独应用。解压 `dualboot-tools.zip` 后可按本文命令获取、校验 KernelSU 上游组件并生成 Android boot。

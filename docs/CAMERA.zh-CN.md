@@ -1,6 +1,6 @@
 # 相机
 
-小米平板 6 Pro 的后置摄像头（三星 S5KJN1，5000 万像素）以实验功能提供：可以在发行版自带的「相机」应用（GNOME Snapshot）里预览、拍照和录像。图像处理由 libcamera 的软件 ISP 在 CPU 上完成，没有校准过的调校参数，没有自动对焦，也不使用硬件编码。前置摄像头尚未启用。
+小米平板 6 Pro 的后置摄像头（三星 S5KJN1，5000 万像素）以实验功能提供：可以在 Plasma 相机（`plasma-camera`）里预览、拍照和录像。桌面已从 GNOME 换成 Plasma Mobile，相机应用一并更换：GNOME Snapshot、它的启动器 divert 和为它关闭 `GDK_DISABLE` 的 `liuqin-camera` 包装脚本都已删除。后摄预览已于 2026-10-30 在 Plasma 相机上复验；拍照与录像在更换后尚未重测，下文的相应描述来自 Snapshot 时期的验证。图像处理由 libcamera 的软件 ISP 在 CPU 上完成，没有校准过的调校参数，没有自动对焦，也不使用硬件编码。前置摄像头尚未启用。
 
 | 功能 | 状态 |
 | --- | --- |
@@ -34,24 +34,19 @@
 | `device/configs/liuqin-camera.config` | 启用以上模块和系统 DMA-BUF heap，在模块裁剪之后应用 |
 | `/etc/modprobe.d/liuqin-camera.conf` | 先加载时钟控制器，再加载 CAMSS |
 | `/etc/udev/rules.d/70-liuqin-camera-heap.rules` | 允许 video 组和当前登录用户访问 `/dev/dma_heap/system`，软件 ISP 从这里分配缓冲区 |
-| `/usr/local/bin/liuqin-camera` | 启动 Snapshot，并为它重新打开 DMA-BUF 导入（见下文） |
-| `/usr/local/share/applications/org.gnome.Snapshot.desktop`、`/usr/local/share/dbus-1/services/org.gnome.Snapshot.service` | 让「相机」图标和 D-Bus 激活都经过 `liuqin-camera` 启动 |
+| `plasma-camera` | 相机应用；Qt/GStreamer，直接使用 libcamera 管线 |
 
-镜像还预装了 `gnome-snapshot`、`libcamera-ipa`、`gstreamer1.0-libcamera`、`gstreamer1.0-plugins-bad`（`h264parse`）、`gstreamer1.0-plugins-ugly`（录像用的 H.264 编码器）、`gstreamer1.0-libav`（回放用的 H.264 解码器），以及[验证](#验证)一节用到的诊断工具 `libcamera-tools`（`cam`）和 `v4l-utils`（`media-ctl`、`v4l2-ctl`）。它们只是镜像内容，不是 `liuqin-device-support` 的依赖，卸载它们不会影响设备支持包。
+镜像还预装了 `plasma-camera`、`libcamera-ipa`、`gstreamer1.0-libcamera`、`gstreamer1.0-plugins-bad`（`h264parse`）、`gstreamer1.0-plugins-ugly`（录像用的 H.264 编码器）、`gstreamer1.0-libav`（回放用的 H.264 解码器），以及[验证](#验证)一节用到的诊断工具 `libcamera-tools`（`cam`）和 `v4l-utils`（`media-ctl`、`v4l2-ctl`）。它们只是镜像内容，不是 `liuqin-device-support` 的依赖，卸载它们不会影响设备支持包。
 
-## Snapshot 的 DMA-BUF 导入
+## DMA-BUF 导入
 
-在这台设备上，GTK 直接导入 DMA-BUF 作为纹理时可能读到旧数据：CPU 写入的内容还没对 GPU 可见，GPU 就开始读，画面显示为噪点。因此 `/etc/environment.d/50-liuqin-dmabuf.conf` 对所有应用设置了 `GDK_DISABLE=dmabuf`，让 GTK 改为复制一份图像再上传。
+在这台设备上，GTK 直接导入 DMA-BUF 作为纹理时可能读到旧数据：CPU 写入的内容还没对 GPU 可见，GPU 就开始读，画面显示为噪点。因此 `/etc/environment.d/50-liuqin-dmabuf.conf` 对所有 GTK 应用设置了 `GDK_DISABLE=dmabuf`，让 GTK 改为复制一份图像再上传。这条规避继续保留，它针对的是 GTK，不是相机。
 
-Snapshot 的相机预览需要 DMA-BUF 导入，所以 `liuqin-camera` 只为 Snapshot 清除了 `GDK_DISABLE`。相机预览正好是全局规避所针对的模式（软件 ISP 在 CPU 上写帧，GPU 负责显示），因此预览有可能出现花屏，不过测试中没有观察到。保存的照片和视频由 CPU 直接从帧数据编码，不受影响。等内核的缓存一致性问题修复后，全局设置和这个例外会一起移除。
+Plasma 相机不走 GDK：它通过 Qt Multimedia 和 GStreamer 取 libcamera 的帧，因此 GTK 的规避不适用于它，GNOME 时期为它单独清除 `GDK_DISABLE` 的例外也随包装脚本一并删除。后摄预览是在全局 `GDK_DISABLE=dmabuf` 仍然生效的情况下复验通过的。
 
 ## 使用
 
-从应用列表打开「相机」即可。录像是在关闭 Snapshot 硬件编码的情况下测试的，如果录像失败，请关闭硬件编码：
-
-```sh
-gsettings set org.gnome.Snapshot enable-hardware-encoding false
-```
+从应用列表打开「相机」即可。录像是在 Snapshot 关闭硬件编码的情况下测试的；Plasma 相机没有对应开关，依赖录像前请先重测。
 
 ## 验证
 
@@ -64,12 +59,12 @@ sudo cat /sys/kernel/debug/pm_genpd/pm_genpd_summary | grep -Ei 'titan|ife'
                                 # 相机相关电源域应为 off
 ```
 
-Snapshot 正在预览时不要运行 `cam -l` 或其他相机枚举：libcamera 枚举时会重置传感器的翻转控制，导致当前预览上下颠倒，直到重新打开「相机」。视频节点编号不固定，直接采集测试请用 `media-ctl -p`（来自 v4l-utils）查找 `msm_vfe0_video0`。
+Plasma 相机正在预览时不要运行 `cam -l` 或其他相机枚举：libcamera 枚举时会重置传感器的翻转控制，导致当前预览上下颠倒，直到重新打开「相机」。视频节点编号不固定，直接采集测试请用 `media-ctl -p`（来自 v4l-utils）查找 `msm_vfe0_video0`。
 
 ## 排障
 
 - **找不到摄像头：** 检查模块是否加载（`lsmod | grep -E 's5kjn1|qcom_camss|camcc'`），并查看 `journalctl -k | grep -Ei 'camss|s5kjn1|cci'`。
-- **Snapshot 打开后没有画面：** 确认是从「相机」图标启动的，而不是直接运行 `/usr/bin/snapshot`；并确认用户目录下没有 `~/.local/share/applications/org.gnome.Snapshot.desktop` 或 D-Bus 服务覆盖绕过了 `liuqin-camera`。
+- **Plasma 相机打开后没有画面：** 确认没有其他程序占用相机（预览运行时 `cam -l` 会失败），并查看 `journalctl --user -b | grep -i camera`。
 - **录下的视频回放黑屏：** 缺少 `gstreamer1.0-libav`。
 
 ## 来源

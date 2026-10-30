@@ -1,6 +1,6 @@
 # Ubuntu for Xiaomi Pad 6 Pro
 
-在 Xiaomi Pad 6 Pro 上运行 Ubuntu 26.04 桌面，采用 GNOME 桌面环境与基于上游 Linux 的设备适配内核。[English](README.md)
+在 Xiaomi Pad 6 Pro 上运行 Ubuntu 26.04 桌面，采用 Plasma Mobile 桌面环境与基于上游 Linux 的设备适配内核。[English](README.md)
 
 ## 最新版本与近期更新
 
@@ -8,7 +8,7 @@
 
 自首次开源以来，主要更新包括：
 
-- **原生指纹登录**：在 Ubuntu「设置 → 用户」录入，支持锁屏解锁和开机登录；已验证同指通过、异指拒绝，目前限首个账号、一枚指纹。
+- **原生指纹登录**：用 `fprintd-enroll`（或 Plasma 系统设置的“用户”页）录入，支持锁屏解锁和开机登录；已验证同指通过、异指拒绝，目前限首个账号、一枚指纹。
 - **DP 外接显示**：已验证外屏画面、拔线恢复内屏及接回电脑恢复 USB；其他转接器、DP 音频和高刷新率仍待验证。
 - **双系统与相机**：提供保留 Android 的安装布局和返回 Ubuntu 的 KernelSU 模块，修复原厂固件导致的启动问题；加入后置摄像头实验支持并修复扬声器。双系统验证边界见下方安装说明，相机限制见支持表。
 - **输入、录音与充电**：修复磁吸键盘触摸板，适配不同触摸面板，加入 USB OTG、单麦克风录音和充电认证；补齐 Waydroid 所需内核配置，Waydroid 整体运行仍属未验收的实验功能。
@@ -201,7 +201,7 @@ adb -s liuqin shell 'python3 /tmp/memory-features.py --config /proc/config.gz --
 sudo apt-get install snapd firefox                                    # 装回 snap
 sudo apt-get install fwupd cups cups-browsed modemmanager rsyslog \
     networkd-dispatcher switcheroo-control evolution-data-server gnome-calendar
-sudo rm /etc/systemd/user/localsearch-3.service /etc/systemd/system/colord.service
+sudo apt-get install gnome-shell gdm3 ubuntu-session                 # 装回 GNOME 会话
 sudo rm /etc/systemd/zram-generator.conf                              # 去掉 zram swap
 ```
 
@@ -235,7 +235,7 @@ Ubuntu 软件包通过 APT 管理。项目内核与设备组件的更新方式�
 ## 致谢与许可证
 
 本项目基于 [sm8450-mainline](https://github.com/sm8450-mainline/linux) 的内核工作，
-并使用 Ubuntu、GNOME、Freedreno 和 Linux Qualcomm 社区的成果。
+并使用 Ubuntu、KDE、GNOME 和 Linux Qualcomm 社区的成果。
 
 除文件另有声明外，项目原创代码采用 MIT 许可证。Linux 内核及第三方组件保留各自许可证；
 固件适用其权利人的授权条款。详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

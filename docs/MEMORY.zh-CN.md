@@ -9,7 +9,10 @@
 | `device/root-overlay/etc/systemd/zram-generator.conf` | 已安装系统的 swap 形状 |
 | `device/root-overlay/etc/systemd/**` 指向 `/dev/null` 的软链 | 不删包、只屏蔽的单元 |
 
-## 实测基线
+## 实测基线（GNOME Shell，迁移前）
+
+桌面自 2026-10-30 起是 Plasma Mobile；本节是当初驱动裁剪的 GNOME Shell 实测，
+保留是因为 `[purge]` 的取舍仍然引用它。Plasma 的数字见下文“Plasma Mobile 迁移”。
 
 小米平板 6 Pro，8 GB 版本，`MemTotal` 6608256 kB（其余被固件保留），Ubuntu 26.04，
 GNOME Shell 50.1，开机 10 分钟，单用户，额外开了「设置 → 电源」和终端。下表是把同名
@@ -232,18 +235,40 @@ sudo apt-get install -y ./google-chrome-stable_current_arm64.deb
 [内存说明](MEMORY.zh-CN.md#换掉-gnome-值不值) 里已经估过约 600 MB——代价是作废
 本项目长在 GNOME 里的那些集成。
 
-## 换掉 GNOME 值不值
+## Plasma Mobile 迁移（2026-10-30）
 
-在这台机器上实测，内核之上的整个 GNOME 栈约 755 MB。wlroots 一类会话
-（labwc 或 niri + waybar + foot）空载约 100–150 MB，天花板也就是 ~600 MB——比 zram
-单独带来的收益还少，而且它会作废本项目长在 GNOME 里面的那几块：`gdm3` + 指纹登录、
-`gnome-initial-setup` 首次开机、dconf 电源策略、打过补丁的 `gnome-control-center`
-电源面板、屏幕键盘和 2× 缩放策略。连发行版一起换则是另一个量级的工作：rootfs 流水线
-是从 Ubuntu casper 镜像构建的（`tools/build-liuqin-ubuntu-desktop-rootfs.sh`）。
+会话曾是 GNOME Shell，后来 Plasma Mobile 与它并存，再之后 GNOME 与 Phosh 会话被移除。
+8 GB 机器上的实测代价与收益：
 
-如果以后还是要放弃 GNOME，成本更低的顺序是：留着 `gdm3` 与 PAM 栈（它们与具体桌面无关），
-加一个 wlroots 会话并设为默认，GNOME 会话仍可切换。那是「换会话」，不是「换发行版」，
-既不动内核也不动 rootfs 流水线。
+| 指标 | 迁移前 | 迁移后 |
+|---|---:|---:|
+| 已安装包数（`dpkg-query -W`） | 2288 | 2098 |
+| `/` 已用 / 可用（32 GB root） | 13 G / 19 G | 13 G / 20 G |
+| 开机后 `free -m` 的 used | 1390–2267（见基线） | 2579 |
+
+磁盘是净收益：一边装了 SDDM、Dolphin、Plasma 相机、Konsole、kcalc 和 kdialog，
+一边删掉了 GNOME Shell 栈、Phosh、IBus 以及 GNOME 文档/语言包
+（确切集合就是裁剪清单的 `[purge]`）。
+
+内存没有变好。开机空载的每进程 RSS（`ps -eo rss,comm`，与上面用 PSS 的基线不可直接比较）：
+`plasmashell` 464 MB、`kwin_wayland` 241、`kded6` 160、`org_kde_powerdevil` 147、
+`polkit-kde-authentication-agent` 145、`kactivitymanagerd` 141、`xdg-desktop-portal` 138、
+`ksecretd` 136、`gmenudbusmenuproxy` 132、`xembedsniproxy` 132、`ksmserver` 125、
+`Xwayland` 98、`fcitx5` 77。下一步是补一次 PSS 测量并审查候选屏蔽项
+（`kactivitymanagerd`、`gmenudbusmenuproxy`、`xembedsniproxy`、KWallet 与仍为
+libsecret 保留的 gnome-keyring）；这些目前都没有写进
+`device/configs/liuqin-root-trim.txt`，因为还没有按屏蔽后的空载基线测过。
+
+有两处 GNOME 专属部件必须跟着会话一起搬，而不是删掉：
+
+- 第一阶段准入契约把 `gdm3`、`gnome-shell` 和
+  `display-manager.service -> gdm3.service` 当成桌面写死；现在钉的是 `sddm`、
+  `kwin_wayland`、`plasmashell`、`startplasmamobile` 和
+  `display-manager.service -> sddm.service`（`initramfs/init` 的 native 配置）；
+- 电源键助手原来驱动 `org.gnome.ScreenSaver` 和 Mutter 的 DPMS，现在驱动
+  `org.freedesktop.ScreenSaver`（KWin 拥有该名字）和 `kscreen-doctor --dpms`，
+  并让 PowerDevil `PowerButtonAction=0`，避免它对同一个键再动作一次。
+  真机验证：按下 → 上锁并关屏，再按 → 亮屏停在锁屏，再按 → 关屏，再按 → 亮屏。
 
 ## 回退
 

@@ -1,10 +1,15 @@
 # Camera
 
 The Xiaomi Pad 6 Pro rear camera (Samsung S5KJN1, 50 MP) works as an
-experimental feature: preview, still photos and video recording run in the
-distribution Camera application (GNOME Snapshot). Image processing runs on the
-CPU through libcamera's software ISP; there is no calibrated tuning, no
-autofocus and no hardware encoding. The front camera is not enabled.
+experimental feature: preview, still photos and video recording run in Plasma
+Camera (`plasma-camera`).  The desktop moved from GNOME to Plasma Mobile, so the
+app did too: the GNOME Snapshot package, its launcher divert and the
+`liuqin-camera` wrapper that re-enabled DMA-BUF import for it are gone.  Rear
+preview was re-verified in Plasma Camera on 2026-10-30; stills and recording
+have not been re-run since the swap, and the notes below describing them come
+from the Snapshot testing.  Image processing runs on the CPU through
+libcamera's software ISP; there is no calibrated tuning, no autofocus and no
+hardware encoding. The front camera is not enabled.
 
 | Function | Status |
 | --- | --- |
@@ -23,7 +28,8 @@ of the camera kernel) covered:
   returning to off after each one;
 - a continuous 300-frame 4080 x 3060 RAW capture at a mean frame interval of
   33.3 ms;
-- real-scene 1920 x 1080 JPEG photos and ten-second MP4 recordings in Snapshot,
+- real-scene 1920 x 1080 JPEG photos and ten-second MP4 recordings in Snapshot
+  (the pre-Plasma app; stills and recording were not re-run in Plasma Camera),
   with in-app playback, across repeated close/reopen cycles;
 - correct preview orientation.
 
@@ -48,10 +54,9 @@ complete without them is not established.
 | `device/configs/liuqin-camera.config` | enables the above and the system DMA-BUF heap, applied after the module trim |
 | `/etc/modprobe.d/liuqin-camera.conf` | loads the clock controller before CAMSS |
 | `/etc/udev/rules.d/70-liuqin-camera-heap.rules` | gives the video group and the active seat access to `/dev/dma_heap/system`, which the software ISP allocates from |
-| `/usr/local/bin/liuqin-camera` | starts Snapshot with DMA-BUF import re-enabled (see below) |
-| `/usr/local/share/applications/org.gnome.Snapshot.desktop`, `/usr/local/share/dbus-1/services/org.gnome.Snapshot.service` | route the Camera launcher and D-Bus activation through `liuqin-camera` |
+| `plasma-camera` | the Camera application; Qt/GStreamer, so it reads the libcamera pipeline directly |
 
-The image also installs `gnome-snapshot`, `libcamera-ipa`,
+The image also installs `plasma-camera`, `libcamera-ipa`,
 `gstreamer1.0-libcamera`, `gstreamer1.0-plugins-bad` (`h264parse`),
 `gstreamer1.0-plugins-ugly` (the H.264 encoder used for recording),
 `gstreamer1.0-libav` (the H.264 decoder used for playback), and the diagnostic
@@ -60,30 +65,25 @@ in [Verifying](#verifying). They are image content, not dependencies of
 `liuqin-device-support`, so they can be removed without affecting the device
 support.
 
-## DMA-BUF import in Snapshot
+## DMA-BUF import
 
 On this device, GTK's direct DMA-BUF texture import can show stale data: the GPU
 reads a buffer before the CPU's writes to it are visible, and the image renders
 as noise. `/etc/environment.d/50-liuqin-dmabuf.conf` therefore sets
-`GDK_DISABLE=dmabuf` for every application, and GTK uploads images by copying
-them instead.
+`GDK_DISABLE=dmabuf` for every GTK application, and GTK uploads images by
+copying them instead. That workaround stays; it is about GTK, not about the
+camera.
 
-Snapshot needs DMA-BUF import for camera preview, so `liuqin-camera` clears
-`GDK_DISABLE` for Snapshot only. Camera preview is the same pattern the global
-workaround guards against (the software ISP writes the frame on the CPU and the
-GPU displays it), so preview corruption is possible, although it has not been
-observed in testing. Saved photos and videos are encoded from the frames on the
-CPU and are not affected. Both the global setting and this exception will go
-away once the kernel coherency problem is fixed.
+Plasma Camera does not use GDK: it takes the libcamera frames through Qt
+Multimedia and GStreamer, so the GTK import workaround does not apply to it and
+the per-application exception the GNOME build needed is gone with it. Rear
+preview was verified with `GDK_DISABLE=dmabuf` still set globally.
 
 ## Using the camera
 
-Open **Camera** from the application grid. Recording was tested with Snapshot's
-hardware encoding turned off; if recording fails, turn it off:
-
-```sh
-gsettings set org.gnome.Snapshot enable-hardware-encoding false
-```
+Open **Camera** from the application grid.  Recording was tested in Snapshot
+with its hardware encoding turned off; Plasma Camera has no equivalent switch,
+so re-test recording before relying on it.
 
 ## Verifying
 
@@ -96,7 +96,7 @@ sudo cat /sys/kernel/debug/pm_genpd/pm_genpd_summary | grep -Ei 'titan|ife'
                                 # the camera domains should be off
 ```
 
-Do not run `cam -l` or other camera enumeration while Snapshot is previewing:
+Do not run `cam -l` or other camera enumeration while Plasma Camera is previewing:
 libcamera resets the sensor's flip controls during enumeration, which turns the
 active preview upside down until Camera is reopened. Video node numbers are not
 fixed; use `media-ctl -p` (from v4l-utils) to resolve `msm_vfe0_video0` for direct capture tests.
@@ -106,10 +106,9 @@ fixed; use `media-ctl -p` (from v4l-utils) to resolve `msm_vfe0_video0` for dire
 - **No camera found:** check that the modules loaded
   (`lsmod | grep -E 's5kjn1|qcom_camss|camcc'`) and read
   `journalctl -k | grep -Ei 'camss|s5kjn1|cci'`.
-- **Snapshot opens but shows no image:** confirm it was started through the
-  Camera launcher, not `/usr/bin/snapshot` directly, and that no user-level
-  `~/.local/share/applications/org.gnome.Snapshot.desktop` or D-Bus service
-  override bypasses `liuqin-camera`.
+- **Plasma Camera opens but shows no image:** check that nothing else holds the
+  camera (`cam -l` fails while a preview is running) and read
+  `journalctl --user -b | grep -i camera`.
 - **Recorded video plays black:** `gstreamer1.0-libav` is missing.
 
 ## Provenance

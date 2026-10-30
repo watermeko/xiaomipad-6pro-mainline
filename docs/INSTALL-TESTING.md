@@ -359,6 +359,22 @@ python3 install.py --bundle . --serial DEVICE_SERIAL \
 
 `--android-boot` is optional; without it the ROM's `boot.img` is stored.
 
+**Create the first account in the same run.** The image ships Plasma Mobile with
+SDDM and no first-boot wizard, so the installer creates the account before the
+system ever boots. Pass `--user` and answer the password prompt (or point
+`--user-password-file` at a file with the password on its first line):
+
+```sh
+python3 install.py --bundle . --serial DEVICE_SERIAL \
+  --backup /path/to/new-private-backup --erase-userdata --layout dual \
+  --user NAME
+```
+
+The account is created with `useradd`, its password hash is set with
+`chpasswd -e`, its home is created on `linux_home`, and SDDM is configured to
+autologin into it.  Without `--user` the system boots to an SDDM greeter that
+has no account to log in with.
+
 ## Android in the Dual Layout
 
 The first Android boot after a dual installation reformats `userdata` and
@@ -430,6 +446,6 @@ installation does not establish that Android recovery has been validated.
 
 On an existing supported split layout, `--no-backup` can replace `--backup PATH` in a `--keep-home` reinstall command. It explicitly skips boot, persist and GPT backups; it cannot be used for initial partitioning or restoring a partition table. Backups remain the default.
 
-`--keep-home` retains only the separate `/home` filesystem. The Ubuntu system partition is recreated, removing its accounts and fingerprint templates/credentials; create the account and enroll the finger again after installation.
+`--keep-home` retains only the separate `/home` filesystem. The Ubuntu system partition is recreated, removing its accounts and fingerprint templates/credentials; create the account with `--user` and enroll the finger again after installation.
 
 The complete bundle also includes `liuqin_boot_ubuntu-v0.3.zip`, `dualboot-tools.zip` and the public fingerprint build input. Normal fingerprint use needs no separate application. Extract `dualboot-tools.zip` to use the documented pinned KernelSU download and Android boot patching commands.

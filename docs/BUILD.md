@@ -104,30 +104,24 @@ Python 3 and zstd are required. The output is the firmware preparer's
 remain incomplete; this tool does not download or distribute firmware.
 
 The device integration sources include system services, audio configuration,
-power-key support, sensor patches and the GNOME Settings patch. Sensor source
-versions are recorded in `device/sensors/sources.manifest`.
+power-key support and sensor patches. Sensor source versions are recorded in
+`device/sensors/sources.manifest`.
 
-GNOME Settings uses the Ubuntu source package and the patch recorded in
-`device/gnome-control-center/source.json`. It requires Python 3.12, curl, patch,
-dpkg-dev and an AArch64 binfmt interpreter on the host, plus the prepared Ubuntu
-ARM64 root filesystem. Prepare its source with:
-
-```sh
-python3 tools/build-liuqin-settings.py --prepare-only
-```
-
-Build with `sudo python3 tools/build-liuqin-settings.py --jobs 8`. The build runs
-inside an isolated mount namespace and does not modify the input root filesystem.
-The device package builder reads its binary and source identity from
-`out/gnome-control-center/`; there is no dependency on a historical Settings binary.
+The desktop layer is Plasma Mobile, installed by the `debs` stage of
+`tools/build-liuqin-native-root.sh` together with `sddm`, before the trim purges
+gdm3 and gnome-shell. The session configuration is files, not a build product:
+`device/root-overlay/etc/sddm.conf.d/10-liuqin.conf` and the Plasma defaults
+under `device/root-overlay/etc/xdg/`. The short-press power-key policy lives in
+`io.github.liuqin.power` and is edited with `/usr/local/bin/liuqin-power-policy`
+(the patched GNOME Settings binary this project used to build is gone).
 
 ### Prepared inputs and the artifact cache
 
 `python3 tools/prepare-image-inputs.py run` prepares every input that
 `build-liuqin-image.py` consumes and writes `out/image-inputs.local.json`.
 Cheap inputs (audio topology, firmware tree) are rebuilt fresh on every run;
-the two slow QEMU builds (the sensor stack and the GNOME Settings power panel)
-are cached under `tools/local/artifacts-cache/` keyed by a fingerprint of
+the one slow QEMU build (the sensor stack) is cached under
+`tools/local/artifacts-cache/` keyed by a fingerprint of
 their sources: an unchanged fingerprint reuses the artifact after a sha256
 re-verification, and any change rebuilds it.  `check` only reports reuse vs
 rebuild without doing the work.  Rebuilds invoke the official builders via
