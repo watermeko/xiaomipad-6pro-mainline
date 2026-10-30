@@ -1,18 +1,18 @@
 #!/usr/local/bin/busybox sh
 # SPDX-License-Identifier: MIT
 set -u
-# The LIUQIN_GNOME_GUARD_TEST_* overrides exist for the host-side fixture in
+# The LIUQIN_GUARD_TEST_* overrides exist for the host-side fixture in
 # tests/storage-guard.sh.  systemd starts this script with a clean unit
 # environment, so on the device every default below applies unchanged.
-BB=${LIUQIN_GNOME_GUARD_TEST_BUSYBOX:-/usr/local/bin/busybox}
-marker=${LIUQIN_GNOME_GUARD_TEST_MARKER:-/etc/liuqin-gnome-root}
-marker_sha=bd86a359f5b6bf05f09abf544967489e924c251ab7c07684df62b0dbda4c3fca
-dev_root=${LIUQIN_GNOME_GUARD_TEST_DEV_ROOT:-/dev}
-mounts=${LIUQIN_GNOME_GUARD_TEST_MOUNTS:-/proc/mounts}
-kmsg=${LIUQIN_GNOME_GUARD_TEST_KMSG:-/dev/kmsg}
+BB=${LIUQIN_GUARD_TEST_BUSYBOX:-/usr/local/bin/busybox}
+marker=${LIUQIN_GUARD_TEST_MARKER:-/etc/liuqin-native-root}
+marker_sha=4fdae4f7a27af8b0d4a2bbc168c7f01c3c5c6b5e245fcc521389d662f8212c5b
+dev_root=${LIUQIN_GUARD_TEST_DEV_ROOT:-/dev}
+mounts=${LIUQIN_GUARD_TEST_MOUNTS:-/proc/mounts}
+kmsg=${LIUQIN_GUARD_TEST_KMSG:-/dev/kmsg}
 
 fail() {
-	echo "liuqin-gnome-guard: critical: $*" >>"$kmsg" 2>/dev/null || :
+	echo "liuqin-guard: critical: $*" >>"$kmsg" 2>/dev/null || :
 	$BB mount -o remount,ro / 2>/dev/null || :
 	exit 1
 }
@@ -22,7 +22,7 @@ path_is_block() {
 	# Host-side tests cannot create block nodes without privilege.  The bypass
 	# is reachable only together with the test BusyBox above, which the unit
 	# never sets.
-	[ -n "${LIUQIN_GNOME_GUARD_TEST_BUSYBOX:-}" ] && [ -f "$1" ]
+	[ -n "${LIUQIN_GUARD_TEST_BUSYBOX:-}" ] && [ -f "$1" ]
 }
 
 [ -f "$marker" ] && [ ! -L "$marker" ] || fail 'root marker missing'
@@ -71,7 +71,7 @@ done <"$mounts"
 # logged.
 home_source=
 home_reject() {
-	echo "liuqin-gnome-guard: warning: /home not admitted read-write: $*; sealing it with the siblings" >>"$kmsg" 2>/dev/null || :
+	echo "liuqin-guard: warning: /home not admitted read-write: $*; sealing it with the siblings" >>"$kmsg" 2>/dev/null || :
 }
 if [ "$homes" -gt 1 ]; then
 	home_reject 'the /home mount is duplicated'
@@ -109,7 +109,7 @@ for node in "$dev_root"/sd*; do
 done
 [ "$total" -ge 2 ] || fail 'no UFS namespace'
 if [ -n "$home_source" ]; then
-	echo "liuqin-gnome-guard: PASS ($total nodes; root and home pairs rw, all siblings ro)" >>"$kmsg" 2>/dev/null || :
+	echo "liuqin-guard: PASS ($total nodes; root and home pairs rw, all siblings ro)" >>"$kmsg" 2>/dev/null || :
 else
-	echo "liuqin-gnome-guard: PASS ($total nodes; root pair rw, all siblings ro)" >>"$kmsg" 2>/dev/null || :
+	echo "liuqin-guard: PASS ($total nodes; root pair rw, all siblings ro)" >>"$kmsg" 2>/dev/null || :
 fi

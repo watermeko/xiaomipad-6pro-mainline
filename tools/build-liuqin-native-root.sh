@@ -109,15 +109,25 @@ cat >/tmp/liuqin-apt.conf <<'APT'
 #clear DPkg::Post-Invoke;
 APT
 apt-get -c /tmp/liuqin-apt.conf update >/dev/null
-# The camera application and its codec plugins are image content, not
-# dependencies of liuqin-device-support: removing Snapshot or a codec must
-# never take the device units with it.  ugly/libav carry the H.264 encoder
-# and decoder that Snapshot recording and in-app playback use; libcamera-tools
-# (cam) and v4l-utils (media-ctl, v4l2-ctl) are the checks docs/CAMERA.md
-# tells users to run.
-apt-get -c /tmp/liuqin-apt.conf install -y --no-install-recommends libqrtr1 libprotobuf-c1 \
-	gnome-snapshot libcamera-ipa gstreamer1.0-libcamera gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+# The desktop is Plasma Mobile, not the GNOME Shell session the pinned Ubuntu
+# desktop rootfs ships.  Install it before the trim, because the trim purges
+# gdm3 and gnome-shell: without sddm and plasma-mobile in the same transaction
+# the tree would be left without a display manager.
+apt-get -c /tmp/liuqin-apt.conf install -y --no-install-recommends \
+	sddm sddm-theme-breeze plasma-mobile plasma-settings systemsettings \
+	kwin-wayland powerdevil kscreen plasma-nm plasma-pa bluedevil \
+	kde-cli-tools kdialog plasma-integration layer-shell-qt breeze \
+	dolphin plasma-camera kcalc fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-qt6 \
+	libqrtr1 libprotobuf-c1 \
+	libcamera-ipa gstreamer1.0-libcamera gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
 	libcamera-tools v4l-utils systemd-zram-generator >/dev/null
+# The login manager is a package-manager decision: point the display-manager
+# alias and the file sddm.service checks at sddm, and keep gdm3 from taking
+# them back during the purge below.
+printf '/usr/bin/sddm\n' >/etc/X11/default-display-manager
+systemctl enable sddm.service >/dev/null 2>&1 || true
+[ "$(readlink /etc/systemd/system/display-manager.service)" = /lib/systemd/system/sddm.service ] ||
+	{ echo 'display-manager.service is not sddm after install' >&2; exit 1; }
 dpkg -i /tmp/liuqin-debs/liuqin-firmware_*_all.deb \
 	/tmp/liuqin-debs/liuqin-device-support_*_arm64.deb \
 	/tmp/liuqin-debs/liuqin-sensors_*_arm64.deb \
@@ -252,8 +262,8 @@ END {
 		ln -sfn "../$2" "$root/etc/systemd/system/$1/$2"
 		[ "$(readlink "$root/etc/systemd/system/$1/$2")" = "../$2" ] || die "unit link failed: $1/$2"
 	}
-	link_unit basic.target.requires liuqin-gnome-storage-guard.service
-	link_unit multi-user.target.wants liuqin-gnome-usb-rescue.service
+	link_unit basic.target.requires liuqin-storage-guard.service
+	link_unit multi-user.target.wants liuqin-usb-rescue.service
 	link_unit multi-user.target.wants liuqin-slpi.service
 	link_unit multi-user.target.wants liuqin-power-keyd.service
 	link_unit graphical.target.wants liuqin-backlight-default.service
@@ -271,7 +281,7 @@ END {
 
 	# --- memory policy (zram + the masked daemons) ---------------------------
 	# These files arrive through liuqin-device-support, i.e. through
-	# device/gnome-overlay.  They are asserted here as well because the overlay
+	# device/root-overlay.  They are asserted here as well because the overlay
 	# copy loop once walked regular files only and dropped every mask link
 	# silently: the tree in git said "masked", the installed system ran the
 	# daemon.  A missing mask is now a build failure, not a measurement.
@@ -315,28 +325,33 @@ END {
 	if find "$root/usr/lib/firmware/cirrus" -name '*-calr.bin' | grep -q .; then
 		die 'per-device cirrus calibration must not be in the generic tree'
 	fi
-	# A human account is uid 1000..59999; nobody (65534) is not one.
+	# A human account is uid 1000..59999; nobody (65534) is not one.  The
+	# account is created by the installer, which writes the first-user record
+	# before the tree ever boots; the generic image must not carry one.
 	if awk -F: '$3 >= 1000 && $3 < 60000 { found=1 } END { exit !found }' "$root/etc/passwd"; then
 		die 'the generic tree carries a human account'
 	fi
-	! grep -Eq '^[[:space:]]*AutomaticLogin' "$root/etc/gdm3/custom.conf" ||
-		die 'gdm autologin survived; first boot must run gnome-initial-setup'
-	! grep -Eq '^[[:space:]]*InitialSetupEnable[[:space:]]*=[[:space:]]*false' "$root/etc/gdm3/custom.conf" ||
-		die 'gdm initial setup is actively disabled'
-	[ -x "$root/usr/libexec/gnome-initial-setup" ] ||
-		die 'gnome-initial-setup is not installed in the tree'
+	[ ! -e "$root/etc/liuqin-first-user" ] ||
+		die 'the generic tree carries a first-user record'
+	! grep -Eq '^[[:space:]]*User[[:space:]]*=' "$root/etc/sddm.conf.d/20-autologin.conf" 2>/dev/null ||
+		die 'sddm autologin survived into the generic tree'
+	[ -x "$root/usr/bin/sddm" ] || die 'sddm is not installed in the tree'
+	[ -L "$root/etc/systemd/system/display-manager.service" ] &&
+		[ "$(readlink "$root/etc/systemd/system/display-manager.service")" = /lib/systemd/system/sddm.service ] ||
+		die 'display-manager.service does not point at sddm'
 
 	# --- stage-1 topology pre-flight (mirror of the native profile in init) ----
 	say 'running the stage-1 topology pre-flight against the tree'
 	preflight_fail() { die "stage-1 pre-flight: $1"; }
 	for exe in \
-		/usr/lib/systemd/systemd /usr/sbin/gdm3 /usr/bin/gnome-shell \
+		/usr/lib/systemd/systemd \
+		/usr/bin/sddm /usr/bin/kwin_wayland /usr/bin/plasmashell /usr/bin/startplasmamobile \
 		/usr/bin/hexagonrpcd \
 		/usr/local/sbin/liuqin-slpi \
 		/usr/local/bin/busybox /usr/local/bin/liuqin-shell \
 		/usr/libexec/iio-sensor-proxy \
-		/usr/local/sbin/liuqin-gnome-storage-guard \
-		/usr/local/sbin/liuqin-gnome-usb-rescue \
+		/usr/local/sbin/liuqin-storage-guard \
+		/usr/local/sbin/liuqin-usb-rescue \
 		/usr/local/sbin/liuqin-root-trim \
 		/usr/local/libexec/liuqin-power-keyd \
 		/usr/local/libexec/liuqin-power-key-action \
@@ -348,9 +363,10 @@ END {
 	done
 	for regular in \
 		/etc/liuqin-native-root \
-		/etc/dconf/db/local.d/locks/00-liuqin-power \
-		/etc/systemd/system/liuqin-gnome-storage-guard.service \
-		/etc/systemd/system/liuqin-gnome-usb-rescue.service \
+		/etc/sddm.conf.d/10-liuqin.conf \
+		/etc/xdg/kwinrc /etc/xdg/kscreenlockerrc /etc/xdg/powerdevilrc \
+		/etc/systemd/system/liuqin-storage-guard.service \
+		/etc/systemd/system/liuqin-usb-rescue.service \
 		/etc/systemd/system/liuqin-power-keyd.service \
 		/etc/systemd/system/bluetooth.service.d/20-liuqin-public-address.conf \
 		/etc/systemd/system/liuqin-bt-preconfigure.service \
@@ -378,8 +394,8 @@ END {
 		[ "$(readlink "$root/etc/systemd/system/default.target")" = /usr/lib/systemd/system/graphical.target ] ||
 		preflight_fail 'default.target is not graphical.target'
 	[ -L "$root/etc/systemd/system/display-manager.service" ] &&
-		[ "$(readlink "$root/etc/systemd/system/display-manager.service")" = /lib/systemd/system/gdm3.service ] ||
-		preflight_fail 'display-manager.service is not gdm3'
+		[ "$(readlink "$root/etc/systemd/system/display-manager.service")" = /lib/systemd/system/sddm.service ] ||
+		preflight_fail 'display-manager.service is not sddm'
 	grep -qx 'Requires=liuqin-bt-preconfigure.service' \
 		"$root/etc/systemd/system/bluetooth.service.d/20-liuqin-public-address.conf" ||
 		preflight_fail 'Bluetooth preconfiguration is not required by BlueZ'

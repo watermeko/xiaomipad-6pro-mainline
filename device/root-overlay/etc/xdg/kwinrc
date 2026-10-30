@@ -1,0 +1,10 @@
+# System-wide KWin defaults for liuqin (Plasma Mobile).
+#
+# fcitx5 is the compositor-side input method.  Chrome runs with
+# --ozone-platform=wayland --enable-wayland-ime, so it hands text input to the
+# compositor over text-input-v3 and never looks at GTK_IM_MODULE; only a
+# compositor-side input method can give it Chinese.  Setting it here makes a
+# fresh account type Chinese without a manual KWin restart, which is what the
+# on-screen keyboard (device/touchinput) is built around.
+[Wayland]
+InputMethod=/usr/share/applications/fcitx5-wayland-launcher.desktop

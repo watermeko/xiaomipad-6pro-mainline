@@ -36,7 +36,7 @@ or in the switcher writes it.
 | Path | What it is |
 |---|---|
 | `module.prop` | KernelSU module metadata |
-| `system/bin/liuqin-switch` | the switcher; packed from `device/gnome-overlay/usr/local/sbin/liuqin-switch` when the zip is built, so both systems run the same script |
+| `system/bin/liuqin-switch` | the switcher; packed from `device/root-overlay/usr/local/sbin/liuqin-switch` when the zip is built, so both systems run the same script |
 | `system/bin/boot-ubuntu` | terminal command: confirmation, then `liuqin-switch to-ubuntu` |
 | `service.sh` | boot-time guard that disables the Android system updater |
 | `webroot/index.html` | the KernelSU WebUI page: the switcher's status plus one button |

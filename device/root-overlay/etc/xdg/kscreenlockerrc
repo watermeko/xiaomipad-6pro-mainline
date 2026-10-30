@@ -1,0 +1,11 @@
+# System-wide screen-locker defaults for liuqin (Plasma Mobile).
+#
+# The GNOME build shipped lock-enabled=true with idle-delay=300: five idle
+# minutes blank the panel and put the lock screen in front of it.  This is the
+# Plasma equivalent, and it is a real authentication boundary on this device
+# because the account has a password (the GNOME bring-up comment about an
+# empty password no longer applies).
+[Daemon]
+Autolock=true
+Timeout=300
+LockOnStart=false

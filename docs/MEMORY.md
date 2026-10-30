@@ -6,8 +6,8 @@ This document is the evidence behind the trim lists in `device/configs/`:
 |---|---|
 | `device/configs/liuqin-memory.config` | kernel (`CONFIG_ZRAM`, zstd, multi-comp) |
 | `device/configs/liuqin-root-trim.txt` | root filesystem packages (`[purge]` / `[keep]`) |
-| `device/gnome-overlay/etc/systemd/zram-generator.conf` | swap geometry of the installed system |
-| `device/gnome-overlay/etc/systemd/**` symlinks to `/dev/null` | units masked without removing their package |
+| `device/root-overlay/etc/systemd/zram-generator.conf` | swap geometry of the installed system |
+| `device/root-overlay/etc/systemd/**` symlinks to `/dev/null` | units masked without removing their package |
 
 ## Measured baseline
 
@@ -75,7 +75,7 @@ reflashing.
 
 **Overlay.** `liuqin-device-support` now ships the `/etc/systemd` mask links it
 always intended to: the previous copy loop walked `-type f` only, so every
-`… -> /dev/null` mask in `device/gnome-overlay` was silently dropped and
+`… -> /dev/null` mask in `device/root-overlay` was silently dropped and
 `unattended-upgrades`, `update-notifier-download.timer` and both `apt-daily`
 timers kept running while git claimed they were masked. The loop now enumerates
 files *and* symlinks, records the target, and the native-root builder asserts the

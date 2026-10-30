@@ -520,12 +520,13 @@ storage_native_root_ok() {
 	done <"$storage_native_contract"
 	[ "$storage_native_lines" -ge 10 ] && [ "$storage_native_lines" -le 128 ] || return 1
 	for storage_native_executable in \
-		/usr/lib/systemd/systemd /usr/sbin/gdm3 /usr/bin/gnome-shell \
+		/usr/lib/systemd/systemd \
+		/usr/bin/sddm /usr/bin/kwin_wayland /usr/bin/plasmashell /usr/bin/startplasmamobile \
 		/usr/bin/hexagonrpcd \
 		/usr/local/bin/busybox /usr/local/bin/liuqin-shell \
 		/usr/libexec/iio-sensor-proxy \
-		/usr/local/sbin/liuqin-gnome-storage-guard \
-		/usr/local/sbin/liuqin-gnome-usb-rescue \
+		/usr/local/sbin/liuqin-storage-guard \
+		/usr/local/sbin/liuqin-usb-rescue \
 		/usr/local/libexec/liuqin-power-keyd \
 		/usr/local/libexec/liuqin-power-key-action \
 		/usr/local/sbin/liuqin-bt-public-addr \
@@ -535,9 +536,10 @@ storage_native_root_ok() {
 			storage_native_reject "not executable: $storage_native_executable" || return 1
 	done
 	for storage_native_regular in \
-		/etc/dconf/db/local.d/locks/00-liuqin-power \
-		/etc/systemd/system/liuqin-gnome-storage-guard.service \
-		/etc/systemd/system/liuqin-gnome-usb-rescue.service \
+		/etc/sddm.conf.d/10-liuqin.conf \
+		/etc/xdg/powerdevilrc /etc/xdg/kscreenlockerrc /etc/xdg/kwinrc \
+		/etc/systemd/system/liuqin-storage-guard.service \
+		/etc/systemd/system/liuqin-usb-rescue.service \
 		/etc/systemd/system/liuqin-power-keyd.service \
 		/etc/systemd/system/liuqin-backlight-default.service \
 		/etc/systemd/system/bluetooth.service.d/20-liuqin-public-address.conf \
@@ -553,15 +555,15 @@ storage_native_root_ok() {
 		[ "$("$BB" stat -c '%a' "$storage_checked_root$storage_native_regular" 2>/dev/null || true)" = 644 ] ||
 			storage_native_reject "project regular-file mode is invalid: $storage_native_regular" || return 1
 	done
-	[ -L "$storage_checked_root/etc/systemd/system/basic.target.requires/liuqin-gnome-storage-guard.service" ] ||
+	[ -L "$storage_checked_root/etc/systemd/system/basic.target.requires/liuqin-storage-guard.service" ] ||
 		storage_native_reject "storage guard is not required by basic.target" || return 1
-	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/basic.target.requires/liuqin-gnome-storage-guard.service")" = ../liuqin-gnome-storage-guard.service ] || return 1
+	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/basic.target.requires/liuqin-storage-guard.service")" = ../liuqin-storage-guard.service ] || return 1
 	[ ! -e "$storage_checked_root/etc/systemd/system/basic.target.requires/liuqin-snap-root-admission.service" ] &&
 		[ ! -L "$storage_checked_root/etc/systemd/system/basic.target.requires/liuqin-snap-root-admission.service" ] ||
 		storage_native_reject "snap admission still gates basic.target" || return 1
-	[ -L "$storage_checked_root/etc/systemd/system/multi-user.target.wants/liuqin-gnome-usb-rescue.service" ] ||
+	[ -L "$storage_checked_root/etc/systemd/system/multi-user.target.wants/liuqin-usb-rescue.service" ] ||
 		storage_native_reject "USB rescue service is not enabled" || return 1
-	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/multi-user.target.wants/liuqin-gnome-usb-rescue.service")" = ../liuqin-gnome-usb-rescue.service ] || return 1
+	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/multi-user.target.wants/liuqin-usb-rescue.service")" = ../liuqin-usb-rescue.service ] || return 1
 	[ -L "$storage_checked_root/etc/systemd/system/multi-user.target.wants/liuqin-power-keyd.service" ] ||
 		storage_native_reject "power-key policy is not enabled" || return 1
 	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/multi-user.target.wants/liuqin-power-keyd.service")" = ../liuqin-power-keyd.service ] || return 1
@@ -592,7 +594,7 @@ storage_native_root_ok() {
 	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/default.target")" = /usr/lib/systemd/system/graphical.target ] || return 1
 	[ -L "$storage_checked_root/etc/systemd/system/display-manager.service" ] ||
 		storage_native_reject "display-manager.service is not a symlink" || return 1
-	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/display-manager.service")" = /lib/systemd/system/gdm3.service ] || return 1
+	[ "$("$BB" readlink "$storage_checked_root/etc/systemd/system/display-manager.service")" = /lib/systemd/system/sddm.service ] || return 1
 	"$BB" chroot "$storage_checked_root" /usr/lib/systemd/systemd --version >/dev/null 2>&1 ||
 		storage_native_reject "systemd will not execute under chroot" || return 1
 	return 0

@@ -19,8 +19,8 @@ from pathlib import Path
 PINNED_PATHS = (
     "/etc/liuqin-gnome-root",
     "/etc/dconf/db/local.d/locks/00-liuqin-power",
-    "/etc/systemd/system/liuqin-gnome-storage-guard.service",
-    "/etc/systemd/system/liuqin-gnome-usb-rescue.service",
+    "/etc/systemd/system/liuqin-storage-guard.service",
+    "/etc/systemd/system/liuqin-usb-rescue.service",
     "/etc/systemd/system/liuqin-power-keyd.service",
     "/etc/systemd/system/liuqin-power-keyd.service.d/20-liuqin-session-runtime.conf",
     "/etc/systemd/system/liuqin-snap-root-admission.service",
@@ -50,8 +50,9 @@ PINNED_PATHS = (
     "/usr/share/liuqin/power/gschemas.compiled",
     "/usr/local/libexec/liuqin-uinput-automation",
     "/usr/local/libexec/liuqin-audio-hwparams-probe",
-    "/usr/local/sbin/liuqin-gnome-storage-guard",
-    "/usr/local/sbin/liuqin-gnome-usb-rescue",
+    "/usr/local/sbin/liuqin-storage-guard",
+    "/usr/local/sbin/liuqin-usb-rescue",
+    "/usr/local/bin/liuqin-power-policy",
     "/usr/local/sbin/liuqin-snap-root-admission",
     "/usr/local/sbin/liuqin-bt-public-addr",
     "/usr/local/sbin/liuqin-wlan-mac",
@@ -85,8 +86,8 @@ PINNED_PATHS = (
 # everywhere.  The layer's own assertions already guarantee they are present
 # and that the dpkg-owned path is empty.
 
-# Native-install pin list. Same ownership discipline as the GNOME
-# list above, adjusted for the deb layout: the SSC proxy gates at its diverted
+# Native-install pin list. Same ownership discipline as the legacy GNOME list
+# above, adjusted for the deb layout: the SSC proxy gates at its diverted
 # in-place path, the GPU blobs pin at their updates/ override home (the old
 # sequencing deadlock is gone -- every native root ships them from day one),
 # and development evidence tools (ssccli, uinput-automation, the audio probe)
@@ -95,13 +96,16 @@ NATIVE_PINNED_PATHS = (
     "/etc/liuqin-native-root",
     "/etc/systemd/system/liuqin-slpi.service",
     "/usr/local/sbin/liuqin-slpi",
-    "/etc/dconf/db/local.d/locks/00-liuqin-power",
+    "/etc/sddm.conf.d/10-liuqin.conf",
+    "/etc/xdg/kwinrc",
+    "/etc/xdg/kscreenlockerrc",
+    "/etc/xdg/powerdevilrc",
     "/etc/systemd/system/NetworkManager.service.d/20-liuqin-wlan-mac.conf",
     "/etc/systemd/system/bluetooth.service.d/20-liuqin-public-address.conf",
     "/etc/systemd/system/liuqin-backlight-default.service",
     "/etc/systemd/system/liuqin-bt-preconfigure.service",
-    "/etc/systemd/system/liuqin-gnome-storage-guard.service",
-    "/etc/systemd/system/liuqin-gnome-usb-rescue.service",
+    "/etc/systemd/system/liuqin-storage-guard.service",
+    "/etc/systemd/system/liuqin-usb-rescue.service",
     "/etc/systemd/system/liuqin-hexagonrpcd-sdsp.service",
     "/etc/systemd/system/liuqin-power-keyd.service",
     "/etc/systemd/system/liuqin-power-keyd.service.d/20-liuqin-session-runtime.conf",
@@ -124,8 +128,9 @@ NATIVE_PINNED_PATHS = (
     "/usr/local/libexec/liuqin-power-keyd",
     "/usr/local/libexec/liuqin-power-menu",
     "/usr/local/sbin/liuqin-bt-public-addr",
-    "/usr/local/sbin/liuqin-gnome-storage-guard",
-    "/usr/local/sbin/liuqin-gnome-usb-rescue",
+    "/usr/local/sbin/liuqin-storage-guard",
+    "/usr/local/sbin/liuqin-usb-rescue",
+    "/usr/local/bin/liuqin-power-policy",
     "/usr/local/sbin/liuqin-snap-root-admission",
     "/usr/local/sbin/liuqin-wlan-mac",
     "/usr/share/liuqin/kernel-modules.manifest",
@@ -177,6 +182,14 @@ PROJECT_OWNED_PREFIXES = (
 # each exception exact and make any addition a conscious contract review.
 PROJECT_OWNED_EXACT_PATHS = (
     "/etc/dconf/db/local.d/locks/00-liuqin-power",
+    # The Plasma session defaults the overlay installs.  No package owns these
+    # paths, so they are stable across `apt upgrade`; they are pinned because a
+    # root without them boots to a login manager with the wrong idle policy or
+    # without the compositor input method.
+    "/etc/sddm.conf.d/10-liuqin.conf",
+    "/etc/xdg/kwinrc",
+    "/etc/xdg/kscreenlockerrc",
+    "/etc/xdg/powerdevilrc",
     "/etc/systemd/system/bluetooth.service.d/20-liuqin-public-address.conf",
     "/etc/systemd/system/NetworkManager.service.d/20-liuqin-wlan-mac.conf",
     "/etc/udev/rules.d/80-liuqin-fastrpc.rules",

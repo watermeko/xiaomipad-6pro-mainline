@@ -1,0 +1,36 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Long-press chooser for liuqin-power-keyd.  Cancellation never requests a
+# power action.
+#
+# This used to be a Python wrapper around zenity and gnome-session-quit.  The
+# desktop is Plasma Mobile now, so the chooser is kdialog and a session exit
+# goes through org.kde.Shutdown: that asks ksmserver to close the session the
+# same way the Plasma UI does, instead of killing it with systemctl.
+set -eu
+
+kdialog=${LIUQIN_KDIALOG:-/usr/bin/kdialog}
+gdbus=${LIUQIN_GDBUS:-/usr/bin/gdbus}
+systemctl=${LIUQIN_SYSTEMCTL:-/usr/bin/systemctl}
+
+choice=$("$kdialog" --title 'Power' --menu 'Action' \
+	suspend 'Suspend' reboot 'Restart' poweroff 'Power Off' 2>/dev/null) || exit 0
+
+shutdown_call() {
+	"$gdbus" call --session --timeout 10 \
+		--dest org.kde.Shutdown --object-path /Shutdown \
+		--method org.kde.Shutdown."$1" >/dev/null 2>&1
+}
+
+case $choice in
+suspend) exec "$systemctl" suspend ;;
+reboot)
+	shutdown_call logoutAndReboot ||
+		exec "$systemctl" reboot
+	;;
+poweroff)
+	shutdown_call logoutAndShutdown ||
+		exec "$systemctl" poweroff
+	;;
+*) exit 0 ;;
+esac

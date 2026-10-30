@@ -491,7 +491,8 @@ with tempfile.TemporaryDirectory() as directory:
     for layout_mode in ('linux-only', 'dual'):
         for enable_rescue in (False, True):
             for keep_home in (False, True):
-                args = SimpleNamespace(layout=layout_mode, enable_rescue=enable_rescue, keep_home=keep_home)
+                args = SimpleNamespace(layout=layout_mode, enable_rescue=enable_rescue, keep_home=keep_home,
+                               user=None, user_password_file=None)
                 built = installer.install_root_command('not-this-boot', 'http://192.168.7.1:8000', bundle,
                                                        manifest, args, rom_images)
                 options = built[len(fixed):]
@@ -520,7 +521,7 @@ print('PASS: the host sends KEEP-HOME only with --keep-home, after ENABLE-USB-RE
 # digest to install-switch-store.sh), while liuqin-switch expects boot_a to
 # hash like that image zero-filled to the partition size -- which is what the
 # installer now flashes.  The bare image, as flashed before, fails `verify`.
-switch_script = project / 'device/gnome-overlay/usr/local/sbin/liuqin-switch'
+switch_script = project / 'device/root-overlay/usr/local/sbin/liuqin-switch'
 
 
 def switch_function(name):

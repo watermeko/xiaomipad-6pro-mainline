@@ -3,6 +3,7 @@
 """Install a verified liuqin bundle from a Linux host over USB networking."""
 import argparse
 import base64
+import getpass
 import functools
 import hashlib
 import http.server
@@ -222,6 +223,12 @@ def parse_arguments(argv=None):
                         help='Restore the partition table saved in an earlier backup directory and stop')
     parser.add_argument('--yes', action='store_true', help='Skip the interactive data-erasure confirmation')
     parser.add_argument('--allow-unverified', action='store_true', help='Explicitly test an offline-only bundle')
+    parser.add_argument('--user', metavar='NAME',
+                        help='create this account on the tablet; sddm autologins '
+                             'into it (the image ships no first-boot wizard)')
+    parser.add_argument('--user-password-file', type=Path, metavar='PATH',
+                        help='read the account password from this file instead of '
+                             'prompting (one line, trailing newline ignored)')
     parser.add_argument('--enable-rescue', action='store_true',
                         help='Enable unauthenticated root rescue access after installation (trusted USB only)')
     parser.add_argument('--resume-split', action='store_true',
@@ -869,10 +876,43 @@ def install_root_command(boot_id, base_url, bundle, manifest, args, rom_images):
         install.append('ENABLE-USB-RESCUE')
     if args.keep_home:
         install.append('KEEP-HOME')
+    if args.user:
+        install += first_user_arguments(args)
     if args.layout == 'dual':
         install += switch_store_arguments(base_url, manifest['files']['boot.img'], bundle / 'boot.img',
                                           rom_images[ANDROID_BOOT_IMAGE])
     return install
+
+
+def first_user_password(args):
+    """The account password, from the file or from a prompt (never from argv)."""
+    if args.user_password_file:
+        text = args.user_password_file.read_text()
+        password = text.rstrip('\n')
+    else:
+        password = getpass.getpass(f'Password for {args.user} on the tablet: ')
+        if getpass.getpass('Repeat it: ') != password:
+            raise SystemExit('the passwords do not match')
+    if not password:
+        raise SystemExit('an empty password is not accepted for the first account')
+    return password
+
+
+def first_user_arguments(args):
+    """install-root.sh FIRST-USER NAME BASE64-CRYPT-HASH.
+
+    The hash is SHA-512 crypt, base64-encoded so the device-side shell cannot
+    expand the crypt string's dollar signs.
+    """
+    try:
+        hashed = subprocess.run(['openssl', 'passwd', '-6', '-stdin'],
+                                input=first_user_password(args) + '\n',
+                                capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f'could not hash the account password with openssl: {exc}')
+    if not hashed.startswith('$6$'):
+        raise SystemExit('openssl did not produce a SHA-512 crypt hash')
+    return ['FIRST-USER', args.user, base64.b64encode(hashed.encode()).decode()]
 
 
 def switch_store_arguments(base_url, ubuntu_sha256, ubuntu_image, android_entry):

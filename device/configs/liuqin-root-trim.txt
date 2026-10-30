@@ -1,4 +1,4 @@
-# Root filesystem trim for the liuqin native root (Ubuntu 26.04 + GNOME).
+# Root filesystem trim for the liuqin native root (Ubuntu 26.04 + Plasma Mobile).
 #
 # Read by the `debs` stage of tools/build-liuqin-native-root.sh after the liuqin
 # .deb set is installed, inside the same ARM64 chroot.  The stage purges every
@@ -12,21 +12,48 @@
 # `[purge]` entries are package names only.  `[keep]` entries are the runtime
 # the desktop, the sensors, the audio path and the fingerprint login need; they
 # exist so that a dependency change in a future distro snapshot fails here.
+#
+# The desktop was GNOME/Phosh until the Plasma Mobile migration.  Every GNOME
+# session package is now in [purge], including gdm3: its greeter *is*
+# gnome-shell, so keeping the login manager would have kept the whole Shell
+# stack for a screen that autologin skips.  sddm starts the same
+# plasma-mobile.desktop session instead.
 
 [keep]
-# Desktop session and login.  gdm3 stays: the fingerprint login and the
-# first-boot gnome-initial-setup path are wired through it.
-gdm3
-gnome-shell
-mutter-common
-ubuntu-session
-gnome-control-center
-gnome-initial-setup
-gnome-session-bin
-# Files.  nautilus Depends localsearch, so localsearch is kept installed; its
-# indexer units are masked in device/gnome-overlay instead of being purged.
-nautilus
-localsearch
+# --- desktop session and login -------------------------------------------
+# sddm: the login manager.  plasma-mobile: the session file sddm starts.
+# plasma-workspace/kwin-wayland: the compositor.  powerdevil: the power,
+# brightness and idle policy.  kscreen: output configuration.  These are the
+# packages whose absence makes the tablet boot to a black panel.
+sddm
+plasma-mobile
+plasma-workspace
+kwin-wayland
+powerdevil
+kscreen
+plasma-nm
+plasma-pa
+bluedevil
+kde-cli-tools
+kdialog
+systemsettings
+plasma-settings
+plasma-integration
+layer-shell-qt
+breeze
+kf6-breeze-icon-theme
+# Files and the camera.  dolphin replaces nautilus; plasma-camera replaces
+# gnome-snapshot (it is the app docs/CAMERA.md tells users to open).  kcalc
+# replaces gnome-calculator.
+dolphin
+plasma-camera
+kcalc
+# Chinese input: fcitx5 is the compositor-side input method the on-screen
+# keyboard (device/touchinput) types through.
+fcitx5
+fcitx5-chinese-addons
+fcitx5-frontend-gtk3
+fcitx5-frontend-qt6
 # Audio: the four speakers mix through PipeWire and its policy manager.
 pipewire
 wireplumber
@@ -48,9 +75,18 @@ fprintd
 libpam-fprintd
 # Camera preview and recording need these; they are image content, not
 # dependencies of liuqin-device-support.
-gnome-snapshot
 libcamera-ipa
 v4l-utils
+# GTK applications still use gvfs for mounts and file choosers, and Chrome
+# stores secrets through libsecret, whose only backend in this image is
+# gnome-keyring.  Neither is a desktop session component.
+gvfs
+gnome-keyring
+# Portals: the KDE backend is the session's; the GTK one serves GTK apps.
+xdg-desktop-portal
+xdg-desktop-portal-kde
+xdg-desktop-portal-gtk
+polkit-kde-agent-1
 # Compressed swap: the rootfs ships /etc/systemd/zram-generator.conf.
 systemd-zram-generator
 # Reclaim policy: systemd-oomd is only useful with swap present.
@@ -65,10 +101,6 @@ snapd
 firefox
 thunderbird
 # --- package management churn --------------------------------------------
-# Both were already masked in device/gnome-overlay; purging removes the
-# interpreter that stayed resident (unattended-upgrade-shutdown ~23 MB,
-# update-notifier ~28 MB) instead of only disabling its timer.
-#
 # update-notifier is also a Recommends anchor: purging it alone makes apt pull
 # gnome-package-updater and gnome-packagekit-common, i.e. the same updater UI
 # under another name.  Name those two as well so the purge installs nothing.
@@ -99,91 +131,146 @@ rsyslog
 networkd-dispatcher
 # One GPU.  switcheroo-control exists to offer a dGPU launcher.
 switcheroo-control
-# --- GNOME data services --------------------------------------------------
-# Calendar, contacts, the alarm daemon and the EDS registries.  gnome-shell
-# only Recommends evolution-data-server, so this costs the calendar dropdown
-# and the address book, not the shell.  Measured 244 MB RSS as a group.
+# --- GNOME Shell session (replaced by Plasma Mobile) ----------------------
+# 325 MB installed, measured with dpkg-query; ~85 MB of that is
+# gnome-user-docs plus the language-pack-gnome-* sets, which only exist for
+# GNOME's help viewer.  Purging gnome-shell also takes libmutter, the
+# gnome-shell extensions and yaru-theme-gnome-shell with it.
+gdm3
+gnome-shell
+gnome-shell-common
+gnome-shell-ubuntu-extensions
+mutter-common
+ubuntu-session
+gnome-session-bin
+gnome-session-common
+gnome-session-canberra
+gnome-settings-daemon
+gnome-settings-daemon-common
+gnome-initial-setup
+gnome-control-center
+gnome-control-center-data
+gnome-control-center-faces
+gnome-remote-desktop
+gnome-online-accounts
+gnome-bluetooth
+gnome-bluetooth-sendto
+gnome-menus
+xdg-desktop-portal-gnome
+# GNOME applications.  Each has a Plasma counterpart in [keep] or is not
+# needed on this tablet at all.
+nautilus
+gnome-snapshot
+gnome-calculator
+gnome-text-editor
+gnome-logs
+gnome-disk-utility
+gnome-clocks
+gnome-characters
+gnome-font-viewer
+gnome-themes-extra
+gnome-themes-extra-data
+gnome-accessibility-themes
+orca
+yelp
+yelp-xsl
+zenity
+zenity-common
+# Ubuntu/GNOME desktop dressing that only the GNOME session read.
+ubuntu-settings
+ubuntu-docs
+ubuntu-wallpapers
+ubuntu-wallpapers-resolute
+gsettings-ubuntu-schemas
+yaru-theme-gnome-shell
+yaru-theme-gtk
+yaru-theme-icon
+yaru-theme-sound
+language-pack-gnome-de
+language-pack-gnome-de-base
+language-pack-gnome-en
+language-pack-gnome-en-base
+language-pack-gnome-es
+language-pack-gnome-es-base
+language-pack-gnome-fr
+language-pack-gnome-fr-base
+language-pack-gnome-it
+language-pack-gnome-it-base
+language-pack-gnome-pt
+language-pack-gnome-pt-base
+language-pack-gnome-ru
+language-pack-gnome-ru-base
+language-pack-gnome-zh-hans
+language-pack-gnome-zh-hans-base
+gnome-user-docs
+gnome-user-docs-de
+gnome-user-docs-es
+gnome-user-docs-fr
+gnome-user-docs-it
+gnome-user-docs-pt
+gnome-user-docs-ru
+gnome-user-docs-zh-hans
+# GNOME data services.  Calendar, contacts, the alarm daemon and the EDS
+# registries existed for gnome-shell's calendar dropdown and the address book.
+# evolution-data-server-common is deliberately NOT purged: it ships the
+# libedataserver client libraries that GTK applications and gnome-keyring
+# still link.
 evolution-data-server
 gnome-calendar
-# evolution-data-server-common is deliberately NOT purged: it ships the
-# libedataserver client libraries, and gnome-shell, gdm3 and ubuntu-session
-# link those.  Purging it cascades into all three; only the server-side
-# daemons go away.
+# GNOME's file indexer and its storage engine.  They arrived with nautilus;
+# Plasma indexes through baloo instead (see [mask-user]).
+localsearch
+tinysparql
+# colord: the colour-profile daemon.  Its only consumer in this image was
+# gnome-control-center's colour panel, which is gone; the libcolord2 client
+# library stays for GTK.
+colord
+# --- Phosh ----------------------------------------------------------------
+# The Phosh session and its compositor, keyboard and feedback daemon.
+phosh
+phosh-common
+phosh-mobile-settings
+phosh-osk-stevia
+phoc
+squeekboard
+feedbackd
+xdg-desktop-portal-phosh
+# --- IBus ----------------------------------------------------------------
+# The product's input method is fcitx5, wired through
+# /etc/environment.d/50-liuqin-osk.conf.  IBus is GNOME's input method and
+# nothing selects it.  libibus-1.0-5 stays as the GTK module's library.
+ibus
+ibus-chewing
+ibus-data
+ibus-gtk
+ibus-gtk3
+ibus-gtk4
+ibus-libpinyin
+ibus-m17n
+ibus-table
+ibus-table-cangjie
+ibus-table-cangjie-big
+ibus-table-cangjie3
+ibus-table-cangjie5
+ibus-table-quick-classic
+ibus-table-wubi
 
 [mask-user]
-# Per-user units and extensions the session Wants but this tablet has no use
-# for.  These are masked in the live user's systemd --user instance (or
-# disabled through the extension API), not in /etc: they belong to a session,
-# and a different account on the same tablet may legitimately want them.
+# Per-account tweaks the product applies to whichever account logs in.  These
+# are written into the live user's own configuration, not into /etc: they
+# belong to a session, and another account on the same tablet may legitimately
+# want the opposite.
 #
-# Every entry below was measured on the 8 GB unit with the session idle.
-# Together they are ~235 MB of the 1390 MB baseline.
-
-# --- settings daemons for hardware that does not exist --------------------
-# 72 MB.  gnome-session-basic-services.target Wants these; none is a Requires,
-# so masking them does not fail the session.  Verified after masking: the
-# power key, volume keys, the magnetic keyboard, rfkill, auto-rotation and the
-# disk mounts all still work.
-gsd:org.gnome.SettingsDaemon.Wwan.service
-gsd:org.gnome.SettingsDaemon.Smartcard.service
-gsd:org.gnome.SettingsDaemon.Sharing.service
-gsd:org.gnome.SettingsDaemon.PrintNotifications.service
-gsd:org.gnome.SettingsDaemon.UsbProtection.service
-# gsd-xsettings exists only to publish XSETTINGS and clipboard integration for
-# X11 clients.  With the X11 compatibility layer unused (see below) it has no
-# client to serve.
-gsd:org.gnome.SettingsDaemon.XSettings.service
-
-# --- gvfs volume monitors for protocols this tablet cannot be a host for --
-# 36 MB.  afc is iOS, gphoto2 is a PTP camera, mtp is a USB-connected Android
-# device, goa is the online-accounts volume that has no backend left once
-# evolution-data-server is purged.  gvfs-udisks2-volume-monitor is NOT here:
-# it is how internal storage and a USB stick appear in Files.
-gvfs:gvfs-afc-volume-monitor.service
-gvfs:gvfs-gphoto2-volume-monitor.service
-gvfs:gvfs-mtp-volume-monitor.service
-gvfs:gvfs-goa-volume-monitor.service
-
-# --- shell extensions ----------------------------------------------------
-# Measured one at a time; each runs a whole GJS application of its own.
+#   unit:<unit>          mask a systemd --user unit
+#   autostart:<file>     hide an XDG autostart entry in ~/.config/autostart
 #
-# 77 MB: ding@rastersoft.com draws icons on the desktop.  Disabling it costs
-# the desktop icons only; nautilus (Files) still works, the dock still works.
-extension:ding@rastersoft.com
-# 99 MB: ubuntu-appindicators@ubuntu.com hosts StatusNotifier/AppIndicator tray
-# icons.  It is the largest single item found in the second pass, and this
-# image ships no application that uses the protocol.  An account that installs
-# one (Nextcloud, Steam, a chat client) can re-enable it:
-#   gnome-extensions enable ubuntu-appindicators@ubuntu.com
-extension:ubuntu-appindicators@ubuntu.com
-# The two snapd Shell extensions are shell-side halves of snapd, which the
-# [purge] section removes.  They stay ACTIVE regardless and register a search
-# provider and a prompting UI for a package manager that is not installed.
-extension:snapd-prompting@canonical.com
-extension:snapd-search-provider@canonical.com
-
-[mask-user-phosh]
-# Units that are only worth masking in a Phosh session, where they are
-# redundant rather than required.  A GNOME Shell session ignores this section.
+# Applied by /usr/lib/liuqin/apply-root-tweaks.sh --user-only, which
+# liuqin-session-tweaks.service runs once per login.
 #
-# xdg-desktop-portal-gnome: 38 MB.  The portal backends declare UseIn=gnome
-# (gnome.portal, gtk.portal) or UseIn=phosh (phosh.portal, phrosh.portal), and
-# Phosh's session sets XDG_CURRENT_DESKTOP=Phosh:GNOME.  Both tokens match, so
-# xdg-desktop-portal starts the GNOME backend as well as the Phosh one.  Phosh
-# implements every interface this tablet uses; the GNOME backend exists for
-# GNOME Shell's screencast and window-control interfaces, which do not apply
-# here.  Masking it lets those requests fall through to the phosh and gtk
-# backends.
-#
-# Deliberately absent, each with the reason it cannot be done:
-#   gsd-print-notifications (10 MB): phosh.session lists it in
-#     RequiredComponents, so masking it starts the session without it.
-#   gsd-printer (12 MB): not a unit at all - it is a child process of
-#     gsd-print-notifications (verified: same session.slice cgroup), so it
-#     cannot go without its parent.
-#   gsd-wwan, gsd-smartcard, gsd-sharing, gsd-usb-protection: RequiredComponents
-#     of phosh.session, same reason.
-#   phosh-osk-stevia (105 MB): the on-screen keyboard itself, started by
-#     mobi.phosh.OSK.target which the session requires.  Making it lazy would
-#     make the first text field focus wait for the keyboard to start.
-unit:xdg-desktop-portal-gnome.service
+# baloo_file is Plasma's file indexer.  It is started from
+# /etc/xdg/autostart/baloo_file.desktop on every login and this tablet has no
+# use for a full-text index of its home directory: the measured session on the
+# 8 GiB unit ran no baloo process at all (the indexer exits when there is no
+# indexable content), so hiding the entry costs nothing today and keeps a
+# first-boot index from appearing once /home has files.
+autostart:baloo_file.desktop

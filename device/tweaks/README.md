@@ -6,8 +6,8 @@ customisations.  The policy itself lives in one place each:
 | File | Owner |
 |---|---|
 | `device/configs/liuqin-root-trim.txt` | which packages the product removes and which it may not lose |
-| `device/gnome-overlay/etc/systemd/zram-generator.conf` | the zram geometry |
-| `device/gnome-overlay/usr/local/sbin/liuqin-root-trim` | the command that applies the trim on an installed system |
+| `device/root-overlay/etc/systemd/zram-generator.conf` | the zram geometry |
+| `device/root-overlay/usr/local/sbin/liuqin-root-trim` | the command that applies the trim on an installed system |
 | `device/configs/liuqin-memory.config` | the kernel fragment that gives the kernel zram at all |
 
 `apply-root-tweaks.sh` is the single implementation that installs them, and it

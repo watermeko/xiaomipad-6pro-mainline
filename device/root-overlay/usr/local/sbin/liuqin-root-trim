@@ -41,7 +41,7 @@ keep=$(read_section keep)
 installed() { dpkg-query -W -f='${Status}\n' "$1" 2>/dev/null | grep -qx 'install ok installed'; }
 
 # Units whose package has to stay but whose daemon must not run.  Same mask set
-# as device/gnome-overlay/etc/systemd; keeping it here means a tablet that was
+# as device/root-overlay/etc/systemd; keeping it here means a tablet that was
 # installed before the overlay learned to ship its symlinks can repair itself.
 #   colord      purging it removes gnome-control-center
 #   localsearch nautilus Depends it, so only the indexer is masked

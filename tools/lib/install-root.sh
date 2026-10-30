@@ -3,7 +3,7 @@
 # Device-side installer, intended only for the dedicated read-only RAM image.
 set -eu
 die() { printf 'liuqin-install: %s\n' "$*" >&2; exit 1; }
-usage='usage: install-root.sh BOOT_ID ROOTFS_URL SHA256 BYTES ERASE-LIUQIN-USERDATA ROOT_PARTNAME HOME_PARTNAME [ENABLE-USB-RESCUE] [KEEP-HOME] [SWITCH-STORE ubuntu URL SHA256 BYTES android URL SHA256 BYTES]'
+usage='usage: install-root.sh BOOT_ID ROOTFS_URL SHA256 BYTES ERASE-LIUQIN-USERDATA ROOT_PARTNAME HOME_PARTNAME [ENABLE-USB-RESCUE] [KEEP-HOME] [FIRST-USER NAME BASE64-CRYPT-HASH] [SWITCH-STORE ubuntu URL SHA256 BYTES android URL SHA256 BYTES]'
 [ "$#" -ge 7 ] || die "$usage"
 [ "$5" = ERASE-LIUQIN-USERDATA ] || die 'explicit data-erasure acknowledgement required'
 root_name=$6
@@ -17,6 +17,8 @@ home_name=$7
 # fields are always last.
 rescue=
 keep_home=
+first_user=
+first_user_hash=
 store=
 switch_store=${0%/*}/install-switch-store.sh
 store_ubuntu_url='' store_ubuntu_sha='' store_ubuntu_bytes=''
@@ -41,6 +43,20 @@ parse_options() { # the script's own arguments
 		KEEP-HOME)
 			[ -z "$keep_home" ] || die "option given twice: $1; $usage"
 			keep_home=$1
+			;;
+		FIRST-USER)
+			# The account is created here, not by a first-boot wizard: this
+			# image has no GDM and therefore no gnome-initial-setup to run one.
+			# The hash arrives base64-encoded so the device-side shell never
+			# expands the crypt string's dollar signs.
+			[ -z "$first_user" ] || die "option given twice: $1; $usage"
+			[ "$#" -ge 3 ] || die "$usage"
+			first_user=$2
+			first_user_hash=$3
+			case $first_user in
+			'' | *[!a-z0-9_-]*) die "invalid first user name: $first_user" ;;
+			esac
+			shift 2
 			;;
 		SWITCH-STORE)
 			[ "$#" = 9 ] || die "$usage"
@@ -273,6 +289,50 @@ tail -n +2 /etc/liuqin-native-root.contract | while read -r expected path; do
 	actual=$(/bin/busybox sha256sum "/mnt/install/native-root$path" | /bin/busybox cut -d' ' -f1)
 	[ "$actual" = "$expected" ] || die "root contract mismatch: $path"
 done
+# The first account.  sddm autologins into it, so it has to exist before the
+# first boot; there is no GDM and no gnome-initial-setup in this image.
+if [ -n "$first_user" ]; then
+	root=/mnt/install/native-root
+	printf '%s' "$first_user_hash" | /bin/busybox base64 -d >/run/liuqin-first-hash ||
+		die 'the first-user password hash is not valid base64'
+	chroot "$root" /usr/sbin/useradd -M -s /bin/bash \
+		-G sudo,audio,video,render,input,plugdev "$first_user" ||
+		die 'could not create the first account'
+	{ printf '%s:' "$first_user"; cat /run/liuqin-first-hash; } |
+		chroot "$root" /usr/sbin/chpasswd -e ||
+		die 'could not set the first account password'
+	rm -f /run/liuqin-first-hash
+	uid=$(chroot "$root" /usr/bin/id -u "$first_user")
+	gid=$(chroot "$root" /usr/bin/id -g "$first_user")
+	[ -n "$uid" ] && [ -n "$gid" ] || die 'the first account has no ids'
+	# The home lives on its own partition, which is mounted here, not inside
+	# the tree, so useradd -M and an explicit skeleton copy is the only way the
+	# account and its home end up in the same place.
+	if [ ! -d "/mnt/install-home/$first_user" ]; then
+		mkdir -p "/mnt/install-home/$first_user"
+		cp -a "$root/etc/skel/." "/mnt/install-home/$first_user/"
+	fi
+	chown -R "$uid:$gid" "/mnt/install-home/$first_user" ||
+		die 'could not own the first account home'
+	mkdir -p "$root/var/lib/AccountsService/users"
+	cat >"$root/var/lib/AccountsService/users/$first_user" <<EOF
+[User]
+Session=plasma-mobile
+XSession=plasma-mobile
+SystemAccount=false
+EOF
+	chmod 0600 "$root/var/lib/AccountsService/users/$first_user"
+	chown 0:0 "$root/var/lib/AccountsService/users/$first_user"
+	mkdir -p "$root/etc/sddm.conf.d"
+	cat >"$root/etc/sddm.conf.d/20-autologin.conf" <<EOF
+[Autologin]
+User=$first_user
+Session=plasma-mobile
+Relogin=false
+EOF
+	chmod 0644 "$root/etc/sddm.conf.d/20-autologin.conf"
+	printf 'liuqin-install: first account %s created\n' "$first_user"
+fi
 cleanup
 trap - EXIT HUP INT TERM
 printf 'liuqin-install: ROOT_INSTALLED\n'

@@ -31,7 +31,7 @@ they modify.
 Charger authentication
 ----------------------
 
-* liuqin-mipps-auth (device/gnome-overlay/usr/local/libexec/liuqin-mipps-auth)
+* liuqin-mipps-auth (device/root-overlay/usr/local/libexec/liuqin-mipps-auth)
   is derived from xiaomi-mipps-auth by ianchb,
   https://github.com/ianchb/xiaomi-mipps-auth, GPL-2.0-only; the file-level
   SPDX identifier and authorship notice are retained. The liuqin adaptation

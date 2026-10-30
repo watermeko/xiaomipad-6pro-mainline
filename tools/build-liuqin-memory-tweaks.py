@@ -16,7 +16,7 @@ a new bundle:
       CONFIG_ZRAM exists at all
 
 Nothing here decides a policy; it packages the files under device/configs,
-device/gnome-overlay and device/tweaks, and copies the kernel that
+device/root-overlay and device/tweaks, and copies the kernel that
 tools/build-liuqin-kernel.py produced from the pinned commit.
 
     python3 tools/build-liuqin-memory-tweaks.py --kernel-out out/kernel-zram
@@ -80,7 +80,7 @@ def build_deb(out):
 
         # The per-account half.  postinst covers the accounts that exist at
         # install time; this unit covers the first login after a fresh install,
-        # when gnome-initial-setup has just created one.
+        # when the first-boot account creation has just made one.
         bindir = root / 'usr/local/libexec'
         bindir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(PROJECT / 'device/tweaks/liuqin-session-tweaks.sh',
@@ -127,7 +127,7 @@ def build_deb(out):
             'set -e\n'
             '# The [mask-user] section applies per account, so it is applied here for\n'
             '# every human account that already exists.  An account created later\n'
-            '# (gnome-initial-setup on a fresh install) gets it from\n'
+            '# (the first login after an install) gets it from\n'
             '# liuqin-session-tweaks, which runs in that session.\n'
             'apply_user() {\n'
             '\tacct=$1\n'

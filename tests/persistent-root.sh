@@ -467,7 +467,8 @@ make_gnome_tree() {
 		"$tree/usr/local/libexec" "$tree/usr/local/sbin" \
 		"$tree/usr/libexec" "$tree/usr/lib/systemd/system" \
 		"$tree/usr/lib/firmware/qcom/sm8450" \
-		"$tree/usr/share/qcom/sm8450/Xiaomi/liuqin/sensors" +		"$tree/usr/share/liuqin"
+		"$tree/usr/share/qcom/sm8450/Xiaomi/liuqin/sensors" \
+		"$tree/usr/share/liuqin"
 	printf 'LIUQIN_GNOME_ROOT_V1\n' >"$tree/etc/liuqin-gnome-root"
 	printf '[daemon]\nAutomaticLogin=ubuntu\n' >"$tree/etc/gdm3/custom.conf"
 	printf '#!/bin/sh\nexit 0\n' >"$tree/usr/lib/systemd/systemd"
@@ -675,9 +676,10 @@ gnome_r03_contract_only() {
 # same volume, pins project-owned paths only, puts the SSC proxy at its
 # diverted in-place path, and deliberately keeps snap admission out of
 # basic.target.  The fixture mirrors the pin list and the topology gates.
-native_contract_paths='/etc/liuqin-native-root /etc/dconf/db/local.d/locks/00-liuqin-power
-/etc/systemd/system/liuqin-gnome-storage-guard.service
-/etc/systemd/system/liuqin-gnome-usb-rescue.service
+native_contract_paths='/etc/liuqin-native-root /etc/sddm.conf.d/10-liuqin.conf
+/etc/xdg/kwinrc /etc/xdg/kscreenlockerrc /etc/xdg/powerdevilrc
+/etc/systemd/system/liuqin-storage-guard.service
+/etc/systemd/system/liuqin-usb-rescue.service
 /etc/systemd/system/liuqin-power-keyd.service
 /etc/systemd/system/liuqin-power-keyd.service.d/20-liuqin-session-runtime.conf
 /etc/systemd/system/liuqin-backlight-default.service
@@ -700,8 +702,8 @@ native_contract_paths='/etc/liuqin-native-root /etc/dconf/db/local.d/locks/00-li
 /usr/local/bin/busybox /usr/local/bin/liuqin-shell
 /usr/local/libexec/liuqin-power-keyd /usr/local/libexec/liuqin-power-key-action
 /usr/local/libexec/liuqin-power-menu
-/usr/local/sbin/liuqin-gnome-storage-guard
-/usr/local/sbin/liuqin-gnome-usb-rescue
+/usr/local/sbin/liuqin-storage-guard
+/usr/local/sbin/liuqin-usb-rescue
 /usr/local/sbin/liuqin-snap-root-admission
 /usr/local/sbin/liuqin-bt-public-addr /usr/local/sbin/liuqin-wlan-mac
 /usr/share/liuqin/kernel.release /usr/share/liuqin/kernel-modules.manifest
@@ -711,7 +713,7 @@ native_contract_paths='/etc/liuqin-native-root /etc/dconf/db/local.d/locks/00-li
 
 make_native_tree() {
 	tree=$1
-	mkdir -p "$tree/etc/dconf/db/local.d/locks" "$tree/etc/udev/rules.d" \
+	mkdir -p "$tree/etc/sddm.conf.d" "$tree/etc/xdg" "$tree/etc/udev/rules.d" \
 		"$tree/etc/systemd/system/basic.target.requires" \
 		"$tree/etc/systemd/system/multi-user.target.wants" \
 		"$tree/etc/systemd/system/graphical.target.wants" \
@@ -728,13 +730,15 @@ make_native_tree() {
 		"$tree/usr/share/liuqin/power"
 	printf 'liuqin-native-root-v1\n' >"$tree/etc/liuqin-native-root"
 	printf '#!/bin/sh\nexit 0\n' >"$tree/usr/lib/systemd/systemd"
-	printf 'gnome-shell\n' >"$tree/usr/bin/gnome-shell"
+	printf 'sddm\n' >"$tree/usr/bin/sddm"
+	printf 'kwin_wayland\n' >"$tree/usr/bin/kwin_wayland"
+	printf 'plasmashell\n' >"$tree/usr/bin/plasmashell"
+	printf 'startplasmamobile\n' >"$tree/usr/bin/startplasmamobile"
 	printf 'hexagonrpcd\n' >"$tree/usr/bin/hexagonrpcd"
-	printf 'gdm3\n' >"$tree/usr/sbin/gdm3"
 	printf 'busybox\n' >"$tree/usr/local/bin/busybox"
 	printf 'liuqin-shell\n' >"$tree/usr/local/bin/liuqin-shell"
-	printf 'storage-guard\n' >"$tree/usr/local/sbin/liuqin-gnome-storage-guard"
-	printf 'usb-rescue\n' >"$tree/usr/local/sbin/liuqin-gnome-usb-rescue"
+	printf 'storage-guard\n' >"$tree/usr/local/sbin/liuqin-storage-guard"
+	printf 'usb-rescue\n' >"$tree/usr/local/sbin/liuqin-usb-rescue"
 	printf 'power-keyd\n' >"$tree/usr/local/libexec/liuqin-power-keyd"
 	printf 'power-key-action\n' >"$tree/usr/local/libexec/liuqin-power-key-action"
 	printf 'power-menu\n' >"$tree/usr/local/libexec/liuqin-power-menu"
@@ -754,12 +758,14 @@ make_native_tree() {
 		>"$tree/usr/share/liuqin/kernel-modules.manifest"
 	printf 'gschema\n' >"$tree/usr/share/liuqin/power/io.github.liuqin.power.gschema.xml"
 	printf 'compiled\n' >"$tree/usr/share/liuqin/power/gschemas.compiled"
-	printf '/org/gnome/settings-daemon/plugins/power/power-button-action\n' \
-		>"$tree/etc/dconf/db/local.d/locks/00-liuqin-power"
-	printf '[Service]\nExecStart=/usr/local/sbin/liuqin-gnome-storage-guard\n' \
-		>"$tree/etc/systemd/system/liuqin-gnome-storage-guard.service"
-	printf '[Service]\nExecStart=/usr/local/sbin/liuqin-gnome-usb-rescue\n' \
-		>"$tree/etc/systemd/system/liuqin-gnome-usb-rescue.service"
+	printf '[Autologin]\nSession=plasma-mobile\n' >"$tree/etc/sddm.conf.d/10-liuqin.conf"
+	printf '[Wayland]\nInputMethod=fcitx5\n' >"$tree/etc/xdg/kwinrc"
+	printf '[Daemon]\nAutolock=true\n' >"$tree/etc/xdg/kscreenlockerrc"
+	printf '[General]\nPowerButtonAction=0\n' >"$tree/etc/xdg/powerdevilrc"
+	printf '[Service]\nExecStart=/usr/local/sbin/liuqin-storage-guard\n' \
+		>"$tree/etc/systemd/system/liuqin-storage-guard.service"
+	printf '[Service]\nExecStart=/usr/local/sbin/liuqin-usb-rescue\n' \
+		>"$tree/etc/systemd/system/liuqin-usb-rescue.service"
 	printf '[Service]\nExecStart=/usr/local/libexec/liuqin-backlight-default\n' \
 		>"$tree/etc/systemd/system/liuqin-backlight-default.service"
 	printf '[Unit]\nRequires=liuqin-bt-preconfigure.service\nAfter=liuqin-bt-preconfigure.service\n' \
@@ -780,12 +786,14 @@ make_native_tree() {
 		>"$tree/etc/systemd/system/NetworkManager.service.d/20-liuqin-wlan-mac.conf"
 	printf 'SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp"\n' \
 		>"$tree/etc/udev/rules.d/80-liuqin-fastrpc.rules"
-	chmod 0755 "$tree/usr/lib/systemd/systemd" "$tree/usr/bin/gnome-shell" \
+	chmod 0755 "$tree/usr/lib/systemd/systemd" \
+		"$tree/usr/bin/sddm" "$tree/usr/bin/kwin_wayland" \
+		"$tree/usr/bin/plasmashell" "$tree/usr/bin/startplasmamobile" \
 		"$tree/usr/bin/hexagonrpcd" \
-		"$tree/usr/sbin/gdm3" "$tree/usr/local/bin/busybox" \
+		"$tree/usr/local/bin/busybox" \
 		"$tree/usr/local/bin/liuqin-shell" \
-		"$tree/usr/local/sbin/liuqin-gnome-storage-guard" \
-		"$tree/usr/local/sbin/liuqin-gnome-usb-rescue" \
+		"$tree/usr/local/sbin/liuqin-storage-guard" \
+		"$tree/usr/local/sbin/liuqin-usb-rescue" \
 		"$tree/usr/local/libexec/liuqin-power-keyd" \
 		"$tree/usr/local/libexec/liuqin-power-key-action" \
 		"$tree/usr/local/libexec/liuqin-power-menu" \
@@ -795,9 +803,11 @@ make_native_tree() {
 		"$tree/usr/local/sbin/liuqin-wlan-mac" \
 		"$tree/usr/libexec/liuqin-ssc-sample-gate"
 	chmod 0644 "$tree/etc/liuqin-native-root" \
-		"$tree/etc/dconf/db/local.d/locks/00-liuqin-power" \
-		"$tree/etc/systemd/system/liuqin-gnome-storage-guard.service" \
-		"$tree/etc/systemd/system/liuqin-gnome-usb-rescue.service" \
+		"$tree/etc/sddm.conf.d/10-liuqin.conf" \
+		"$tree/etc/xdg/kwinrc" "$tree/etc/xdg/kscreenlockerrc" \
+		"$tree/etc/xdg/powerdevilrc" \
+		"$tree/etc/systemd/system/liuqin-storage-guard.service" \
+		"$tree/etc/systemd/system/liuqin-usb-rescue.service" \
 		"$tree/etc/systemd/system/liuqin-backlight-default.service" \
 		"$tree/etc/systemd/system/liuqin-power-keyd.service" \
 		"$tree/etc/systemd/system/liuqin-power-keyd.service.d/20-liuqin-session-runtime.conf" \
@@ -820,10 +830,10 @@ make_native_tree() {
 		"$tree/usr/share/liuqin/kernel-modules.manifest" \
 		"$tree/usr/share/liuqin/power/io.github.liuqin.power.gschema.xml" \
 		"$tree/usr/share/liuqin/power/gschemas.compiled"
-	ln -s ../liuqin-gnome-storage-guard.service \
-		"$tree/etc/systemd/system/basic.target.requires/liuqin-gnome-storage-guard.service"
-	ln -s ../liuqin-gnome-usb-rescue.service \
-		"$tree/etc/systemd/system/multi-user.target.wants/liuqin-gnome-usb-rescue.service"
+	ln -s ../liuqin-storage-guard.service \
+		"$tree/etc/systemd/system/basic.target.requires/liuqin-storage-guard.service"
+	ln -s ../liuqin-usb-rescue.service \
+		"$tree/etc/systemd/system/multi-user.target.wants/liuqin-usb-rescue.service"
 	ln -s ../liuqin-power-keyd.service \
 		"$tree/etc/systemd/system/multi-user.target.wants/liuqin-power-keyd.service"
 	ln -s ../liuqin-backlight-default.service \
@@ -834,7 +844,7 @@ make_native_tree() {
 		"$tree/etc/systemd/system/display-manager.service"
 	ln -s /usr/lib/systemd/system/graphical.target \
 		"$tree/etc/systemd/system/default.target"
-	ln -s /lib/systemd/system/gdm3.service \
+	ln -s /lib/systemd/system/sddm.service \
 		"$tree/etc/systemd/system/display-manager.service"
 }
 
@@ -861,7 +871,7 @@ native_reset_fixture() {
 
 native_expect_success() {
 	name=$1
-	if ! run_init; then fail "$name: valid native root was rejected"; fi
+	if ! run_init; then cat "$init_log" >&2; fail "$name: valid native root was rejected"; fi
 	[ "$(cat "$state/sda")" = 0 ] || fail "$name: parent was not opened"
 	[ "$(cat "$state/sda35")" = 0 ] || fail "$name: target was not opened"
 	[ "$(cat "$state/sda1")" = 1 ] || fail "$name: sibling became writable"
@@ -1263,10 +1273,10 @@ native_reset_fixture; rm "$probe/native-root/usr/share/liuqin/kernel.release"; e
 
 # Topology gates: enablement links, and the fail-closed snap direction -- a
 # root that still lets snap admission gate basic.target is rejected.
-native_reset_fixture; rm "$probe/native-root/etc/systemd/system/basic.target.requires/liuqin-gnome-storage-guard.service"; expect_rejected_before_open native-guard-enable-missing
+native_reset_fixture; rm "$probe/native-root/etc/systemd/system/basic.target.requires/liuqin-storage-guard.service"; expect_rejected_before_open native-guard-enable-missing
 native_reset_fixture; ln -s ../liuqin-snap-root-admission.service "$probe/native-root/etc/systemd/system/basic.target.requires/liuqin-snap-root-admission.service"; expect_rejected_before_open native-snap-must-not-gate
 native_reset_fixture; rm "$probe/native-root/etc/systemd/system/graphical.target.wants/liuqin-backlight-default.service"; expect_rejected_before_open native-backlight-enable-missing
-native_reset_fixture; rm "$probe/native-root/etc/systemd/system/multi-user.target.wants/liuqin-gnome-usb-rescue.service"; expect_rejected_before_open native-rescue-enable-missing
+native_reset_fixture; rm "$probe/native-root/etc/systemd/system/multi-user.target.wants/liuqin-usb-rescue.service"; expect_rejected_before_open native-rescue-enable-missing
 native_reset_fixture; rm "$probe/native-root/etc/systemd/system/multi-user.target.wants/liuqin-power-keyd.service"; expect_rejected_before_open native-power-key-enable-missing
 native_reset_fixture; rm "$probe/native-root/usr/sbin/init"; ln -s /bin/sh "$probe/native-root/usr/sbin/init"; expect_rejected_before_open native-init-link
 native_reset_fixture; rm "$probe/native-root/etc/systemd/system/default.target"; ln -s /usr/lib/systemd/system/multi-user.target "$probe/native-root/etc/systemd/system/default.target"; expect_rejected_before_open native-default-target

@@ -18,16 +18,16 @@ spec.loader.exec_module(module)
 class StartupModeTests(unittest.TestCase):
     def test_default_development_keeps_control_and_network(self):
         self.assertEqual(module.readiness_services({}),
-                         ("ssh", "NetworkManager", "gdm", "iio-sensor-proxy"))
+                         ("ssh", "NetworkManager", "sddm", "iio-sensor-proxy"))
         self.assertEqual(module.readiness_services({"control_service": "liuqin-codex-wifi.service"})[0],
                          "liuqin-codex-wifi.service")
 
     def test_installed_loader_and_unit_share_dependencies(self):
         info = {"deployment_mode": "installed", "control_service": "unavailable-debug.service"}
-        self.assertEqual(module.readiness_services(info), ("gdm", "iio-sensor-proxy"))
+        self.assertEqual(module.readiness_services(info), ("sddm", "iio-sensor-proxy"))
         unit = module.render_module_unit((DEPLOYMENT / "liuqin-fpc-stable-module.service").read_text(), info)
-        self.assertIn("After=gdm.service iio-sensor-proxy.service\n", unit)
-        self.assertIn("Wants=gdm.service iio-sensor-proxy.service\n", unit)
+        self.assertIn("After=sddm.service iio-sensor-proxy.service\n", unit)
+        self.assertIn("Wants=sddm.service iio-sensor-proxy.service\n", unit)
         self.assertNotIn("NetworkManager", unit)
         self.assertNotIn("unavailable-debug", unit)
         self.assertIn("ConditionPathExists=/dev/tee0\n", unit)

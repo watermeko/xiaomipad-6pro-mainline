@@ -6,8 +6,8 @@
 |---|---|
 | `device/configs/liuqin-memory.config` | 内核（`CONFIG_ZRAM`、zstd、multi-comp） |
 | `device/configs/liuqin-root-trim.txt` | rootfs 软件包（`[purge]` / `[keep]`） |
-| `device/gnome-overlay/etc/systemd/zram-generator.conf` | 已安装系统的 swap 形状 |
-| `device/gnome-overlay/etc/systemd/**` 指向 `/dev/null` 的软链 | 不删包、只屏蔽的单元 |
+| `device/root-overlay/etc/systemd/zram-generator.conf` | 已安装系统的 swap 形状 |
+| `device/root-overlay/etc/systemd/**` 指向 `/dev/null` 的软链 | 不删包、只屏蔽的单元 |
 
 ## 实测基线
 
@@ -64,7 +64,7 @@ NVIDIA/AMD/Intel/Mellanox/QLogic `linux-firmware-*`，另有 820 MB 是 LibreOff
 已安装的平板不重刷也能裁。
 
 **overlay。** `liuqin-device-support` 现在真的会装出它一直想装的 `/etc/systemd` 屏蔽软链：
-之前的拷贝循环只走 `-type f`，所以 `device/gnome-overlay` 里每一个 `… -> /dev/null`
+之前的拷贝循环只走 `-type f`，所以 `device/root-overlay` 里每一个 `… -> /dev/null`
 都被静默丢掉，`unattended-upgrades`、`update-notifier-download.timer` 和两个
 `apt-daily` 定时器一直在跑，而 git 里写着「已屏蔽」。现在循环会同时枚举文件与软链、
 记录链接目标，native-root 构建器还会在组装后的树里断言这些屏蔽和

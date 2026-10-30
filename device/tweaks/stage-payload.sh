@@ -8,9 +8,9 @@
 # developer inspects cannot hold three different versions of the same policy.
 #
 #   device/configs/liuqin-root-trim.txt        the reviewed trim list
-#   device/gnome-overlay/etc/systemd/zram-generator.conf
-#   device/gnome-overlay/usr/local/sbin/liuqin-root-trim
-#   device/gnome-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules
+#   device/root-overlay/etc/systemd/zram-generator.conf
+#   device/root-overlay/usr/local/sbin/liuqin-root-trim
+#   device/root-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules
 #
 # Usage: sh device/tweaks/stage-payload.sh OUT_DIR
 # Writes OUT_DIR/payload/<relative path> for every installed file.
@@ -52,11 +52,11 @@ stage() { # <source> <relative destination> <mode>
 }
 
 stage device/configs/liuqin-root-trim.txt usr/share/liuqin/root-trim.txt 0644
-stage device/gnome-overlay/etc/systemd/zram-generator.conf \
+stage device/root-overlay/etc/systemd/zram-generator.conf \
 	etc/systemd/zram-generator.conf 0644
-stage device/gnome-overlay/usr/local/sbin/liuqin-root-trim \
+stage device/root-overlay/usr/local/sbin/liuqin-root-trim \
 	usr/local/sbin/liuqin-root-trim 0755
-stage device/gnome-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules \
+stage device/root-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules \
 	etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 0644
 
 # The staged list must still be the shape apply-root-tweaks.sh and the image

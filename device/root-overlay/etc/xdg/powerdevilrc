@@ -1,0 +1,42 @@
+# System-wide PowerDevil defaults for liuqin (Plasma Mobile).
+#
+# The display blanks after five minutes and never suspends.  Five minutes is
+# the same idle policy the GNOME build shipped (dconf idle-delay=300): "never
+# blank" was only ever a bring-up default, and on battery it is the most
+# expensive default the desktop has.  Suspend stays off because resume has not
+# been proven on this board yet; raise AutoSuspendIdleTimeoutSec in the same
+# change that proves it, not before.
+#
+# PowerButtonAction=0 (Do nothing) is load-bearing: liuqin-power-keyd owns
+# KEY_POWER so that a short press can blank/lock and a long press can open the
+# chooser.  The daemon deliberately does not grab the device (the same key has
+# to wake a blanked panel), so the desktop still sees the key.  PowerDevil must
+# not act on it a second time.  Enum order in PowerDevil: 0 Do nothing,
+# 1 Sleep, 2 Hibernate, 3 Shut down, 4 Lock screen, 5 Show logout screen,
+# 6 Turn off screen.
+[General]
+PowerButtonAction=0
+
+[AC][Display]
+DimDisplayIdleTimeoutSec=240
+TurnOffDisplayIdleTimeoutSec=300
+TurnOffDisplayWhenIdle=true
+
+[AC][SuspendAndShutdown]
+AutoSuspendIdleTimeoutSec=0
+
+[Battery][Display]
+DimDisplayIdleTimeoutSec=240
+TurnOffDisplayIdleTimeoutSec=300
+TurnOffDisplayWhenIdle=true
+
+[Battery][SuspendAndShutdown]
+AutoSuspendIdleTimeoutSec=0
+
+[LowBattery][Display]
+DimDisplayIdleTimeoutSec=240
+TurnOffDisplayIdleTimeoutSec=300
+TurnOffDisplayWhenIdle=true
+
+[LowBattery][SuspendAndShutdown]
+AutoSuspendIdleTimeoutSec=0

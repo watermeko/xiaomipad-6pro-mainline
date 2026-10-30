@@ -11,7 +11,7 @@ import subprocess
 def readiness_services(candidate):
     """Installed systems must reach the greeter without a debug network."""
     mode = candidate.get("deployment_mode", "development")
-    desktop = ("gdm", "iio-sensor-proxy")
+    desktop = ("sddm", "iio-sensor-proxy")
     if mode == "installed":
         return desktop
     if mode != "development":

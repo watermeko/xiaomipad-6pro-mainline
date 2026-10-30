@@ -3,7 +3,7 @@
 set -eu
 
 marker=/etc/liuqin-rescue-enabled
-unit=liuqin-gnome-usb-rescue.service
+unit=liuqin-usb-rescue.service
 
 listening() {
     ss -H -ltn 'sport = :2323' | awk '

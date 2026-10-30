@@ -14,11 +14,10 @@
 # Distro-file ownership conflicts use dpkg-divert in preinst/postrm, never a
 # bare overwrite.  The set was measured against the pinned 26.04 desktop root:
 # 4 firmware files (linux-firmware-qualcomm-wireless, different bytes) plus the
-# two reviewed component replacements (gnome-control-center power panel, SSC
-# iio-sensor-proxy).  The native install keeps the distro gdm3 custom.conf
-# untouched: with no autologin override and no human user, GDM runs
-# gnome-initial-setup on first boot, so the overlay's autologin
-# variant is deliberately not packaged.
+# SSC iio-sensor-proxy replacement.  The native install owns its login manager
+# (sddm, configured by device/root-overlay/etc/sddm.conf.d) and creates the
+# first account from the installer, so it never depends on gdm3 or on
+# gnome-initial-setup running on first boot.
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -28,7 +27,7 @@ maintainer='yzddmr6 <46088090+yzddmr6@users.noreply.github.com>'
 
 firmware_tree=${FIRMWARE_TREE:-"$project_root/device/firmware"}
 firmware_manifest_sha256=${FIRMWARE_MANIFEST_SHA256:-012c413e0a5d5c3c14631fbdfe50da5c51e95ffc1ae431b8d93f776538b65ba2}
-overlay=${GNOME_OVERLAY:-"$project_root/device/gnome-overlay"}
+overlay=${ROOT_OVERLAY:-"$project_root/device/root-overlay"}
 ubuntu_desktop_root=${UBUNTU_DESKTOP_ROOT:-"$project_root/tools/local/ubuntu-desktop-26.04-arm64/rootfs"}
 audio_probe_libasound=$ubuntu_desktop_root/usr/lib/aarch64-linux-gnu/libasound.so.2.0.0
 busybox=${BUSYBOX:-"$project_root/tools/local/busybox-arm64/usr/bin/busybox"}
@@ -37,9 +36,6 @@ power_key_cc=${POWER_KEY_CC:-$(command -v aarch64-linux-gnu-gcc || true)}
 power_keyd_source=${POWER_KEYD_SOURCE:-"$project_root/device/power-key/liuqin-power-keyd.c"}
 uinput_automation_source=${UINPUT_AUTOMATION_SOURCE:-"$project_root/device/input/liuqin-uinput-automation.c"}
 audio_probe_source=${AUDIO_PROBE_SOURCE:-"$project_root/device/audio-topology/liuqin-audio-hwparams-probe.c"}
-power_settings_binary=${POWER_SETTINGS_BINARY:-"$project_root/out/gnome-control-center/gnome-control-center"}
-power_settings_sha256=${POWER_SETTINGS_SHA256:-}
-power_settings_manifest=${POWER_SETTINGS_MANIFEST:-"$project_root/out/gnome-control-center/build-info.json"}
 # SENSOR_STACK_SHA256 selects the sensor build to include in this package set.
 sensor_stack=${SENSOR_STACK_TAR:-"$project_root/out/liuqin-sensors-stack/artifacts/sensor-stack.tar"}
 sensor_stack_sha256=${SENSOR_STACK_SHA256:-9dcb2b8cb3a6539ccd6d2b410476f3e6ebc725072a3b63089a570ebdaeec5701}
@@ -178,31 +174,12 @@ build_device_support() {
 		die 'the overlay carries no reviewed WebKit fallback environment file'
 	sha_ok "$overlay/$webkit_env" "$webkit_env_sha256" \
 		'the overlay WebKit fallback is not the reviewed legacy-compositor revision'
-	if [ -f "$overlay/usr/share/liuqin/power/io.github.liuqin.power.gschema.xml" ]; then
-		[ -f "$power_settings_binary" ] && [ ! -L "$power_settings_binary" ] ||
-			die 'build the reviewed native power settings component or set POWER_SETTINGS_BINARY'
-		if [ -z "$power_settings_sha256" ]; then
-			power_settings_sha256=$(python3 - "$power_settings_manifest" \
-				"$project_root/device/gnome-control-center/source.json" <<'PY'
-import json, sys
-from pathlib import Path
-info = json.loads(Path(sys.argv[1]).read_text())
-expected = json.loads(Path(sys.argv[2]).read_text())
-if info['source'] != expected:
-    raise SystemExit('Settings build uses different source inputs')
-print(info['binary_sha256'])
-PY
-			) || die 'build GNOME Settings with tools/build-liuqin-settings.py first'
-		fi
-		sha_ok "$power_settings_binary" "$power_settings_sha256" \
-			'native power settings binary identity mismatch'
-	fi
 	root=$work/$pkg/root
 	mkdir -p "$root"
 	# Overlay content, excluding documentation, Python bytecode caches, the
-	# firmware path owned by liuqin-firmware, and the autologin gdm3 override
-	# (native install keeps the distro custom.conf so first boot runs
-	# gnome-initial-setup; see the header comment).
+	# firmware path owned by liuqin-firmware.  The overlay owns the sddm
+	# configuration and the Plasma session defaults, which are exactly what the
+	# native root boots into.
 	#
 	# Symlinks are part of the overlay contract, not an accident: the masking
 	# units under etc/systemd/system are symlinks to /dev/null, and a copy loop
@@ -235,18 +212,13 @@ PY
 		die 'the overlay mask links did not make it into the package file list'
 	[ "$(wc -l <"$work/$pkg.files" | tr -d ' ')" -ge 30 ] ||
 		die 'device-support overlay copy is implausibly small'
-	# Adapt the shared storage guard to the native root marker.
-	guard=$root/usr/local/sbin/liuqin-gnome-storage-guard
-	grep -qx 'marker=${LIUQIN_GNOME_GUARD_TEST_MARKER:-/etc/liuqin-gnome-root}' "$guard" ||
-		die 'storage guard drifted from the reviewed legacy marker'
-	grep -qx 'marker_sha=bd86a359f5b6bf05f09abf544967489e924c251ab7c07684df62b0dbda4c3fca' "$guard" ||
-		die 'storage guard drifted from the reviewed legacy marker hash'
-	sed -i \
-		-e 's|^marker=${LIUQIN_GNOME_GUARD_TEST_MARKER:-/etc/liuqin-gnome-root}$|marker=/etc/liuqin-native-root|' \
-		-e 's|^marker_sha=bd86a359f5b6bf05f09abf544967489e924c251ab7c07684df62b0dbda4c3fca$|marker_sha=4fdae4f7a27af8b0d4a2bbc168c7f01c3c5c6b5e245fcc521389d662f8212c5b|' \
-		"$guard"
-	grep -qx 'marker=/etc/liuqin-native-root' "$guard" ||
-		die 'storage guard native marker rewrite did not land'
+	# The storage guard checks the native root marker; assert the shipped copy
+	# still names it instead of rewriting a second copy at package time.
+	guard=$root/usr/local/sbin/liuqin-storage-guard
+	grep -qx 'marker=${LIUQIN_GUARD_TEST_MARKER:-/etc/liuqin-native-root}' "$guard" ||
+		die 'storage guard drifted from the native root marker'
+	grep -qx 'marker_sha=4fdae4f7a27af8b0d4a2bbc168c7f01c3c5c6b5e245fcc521389d662f8212c5b' "$guard" ||
+		die 'storage guard drifted from the native root marker hash'
 	# Compiled helpers, same deterministic flags as the device-layer builder.
 	mkdir -p "$root/usr/local/libexec"
 	LC_ALL=C SOURCE_DATE_EPOCH=0 "$power_key_cc" \
@@ -314,14 +286,14 @@ PY
 	cmp -s "$trim_list" "$root/usr/share/liuqin/root-trim.txt" ||
 		die 'the shipped trim list differs from device/configs/liuqin-root-trim.txt'
 	if [ -f "$overlay/usr/share/liuqin/power/io.github.liuqin.power.gschema.xml" ]; then
-		install -D -m 0755 "$power_settings_binary" "$root/usr/bin/gnome-control-center"
+		# The schema is the product's; the settings UI is not.  Plasma has no
+		# use for a patched GNOME Settings, so the policy is edited with
+		# /usr/local/bin/liuqin-power-policy and only the schema ships here.
 		command -v glib-compile-schemas >/dev/null || die 'glib-compile-schemas is required'
 		glib-compile-schemas --strict "$root/usr/share/liuqin/power"
 		chmod 0644 "$root/usr/share/liuqin/power/gschemas.compiled"
 	fi
 	mkdir -p "$root/DEBIAN"
-	write_divert_preinst "$pkg" /usr/bin/gnome-control-center
-	write_divert_postrm "$pkg" /usr/bin/gnome-control-center
 	{
 		printf '#!/bin/sh\nset -e\nif [ "$1" = configure ]; then\n'
 		printf '\tif [ -d /run/systemd/system ]; then systemctl daemon-reload || :; fi\n'
@@ -330,8 +302,8 @@ PY
 	} >"$root/DEBIAN/postinst"
 	cp "$work/$pkg.preinst" "$root/DEBIAN/preinst"
 	cp "$work/$pkg.postrm" "$root/DEBIAN/postrm"
-	pack "$pkg" arm64 'libasound2t64 (>= 1.2), gnome-control-center (>= 1:50.0)' \
-		'Xiaomi Pad 6 Pro (liuqin) device support: units, helpers, rescue shell, power panel'
+	pack "$pkg" arm64 'libasound2t64 (>= 1.2)' \
+		'Xiaomi Pad 6 Pro (liuqin) device support: units, helpers, rescue shell, power policy'
 }
 
 build_sensors() {

@@ -8,7 +8,6 @@ that take tens of minutes yet change only when a small, hashable set of
 sources changes:
 
   sensor-stack.tar        tools/build-liuqin-sensors-stack.sh
-  gnome-control-center    tools/build-liuqin-settings.py (native power panel)
 
 This tool fingerprints those source sets, keeps the produced artifacts under
 tools/local/artifacts-cache/ keyed by fingerprint, and reuses an artifact
@@ -73,13 +72,6 @@ def sensors_fingerprint() -> dict:
     }
 
 
-def settings_fingerprint() -> dict:
-    return {
-        'device/gnome-control-center': tree_hash('device/gnome-control-center'),
-        'builder': sha256_file(PROJECT / 'tools/build-liuqin-settings.py'),
-    }
-
-
 def fingerprint_key(fp: dict) -> str:
     blob = json.dumps(fp, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()
@@ -132,14 +124,6 @@ def rebuild_sensors(out_dir: Path) -> Path:
     subprocess.run(['sudo', '-n', 'sh', 'tools/build-liuqin-sensors-stack.sh'],
                    cwd=PROJECT, env=env, check=True)
     return tar
-
-
-def rebuild_settings(out_dir: Path) -> Path:
-    subprocess.run(['python3', 'tools/build-liuqin-settings.py', '--prepare-only'],
-                   cwd=PROJECT, check=True)
-    subprocess.run(['sudo', '-n', 'python3', 'tools/build-liuqin-settings.py',
-                    '--jobs', str(os.cpu_count() or 8)], cwd=PROJECT, check=True)
-    return out_dir / 'gnome-control-center'
 
 
 def rebuild_topology(out_bin: Path) -> None:
@@ -198,9 +182,6 @@ def gather() -> dict:
     fp = sensors_fingerprint()
     hit = cache_lookup(cache, 'sensor-stack', fp)
     plan['sensors'] = {'fp': fp, 'hit': hit}
-    fp = settings_fingerprint()
-    hit = cache_lookup(cache, 'gnome-control-center', fp)
-    plan['settings'] = {'fp': fp, 'hit': hit}
     return cache, plan
 
 
@@ -223,13 +204,6 @@ def cmd_run() -> None:
         sensor_tar = rebuild_sensors(sensors_work)
         cache_store(cache, 'sensor-stack', plan['sensors']['fp'], sensor_tar)
 
-    settings_work = PROJECT / 'out/prepared-inputs/settings'
-    if plan['settings']['hit']:
-        settings_bin = plan['settings']['hit']
-    else:
-        subprocess.run(['rm', '-rf', str(settings_work)], check=True)
-        settings_bin = rebuild_settings(settings_work)
-        cache_store(cache, 'gnome-control-center', plan['settings']['fp'], settings_bin)
     save_cache(cache)
 
     topology_bin = PREPARED / 'topology/Xiaomi-Pad-6-Pro-tplg.bin'
@@ -245,13 +219,6 @@ def cmd_run() -> None:
     rebuild_firmware(firmware_dir, topology_bin, wlan)
     firmware_manifest = firmware_dir / 'firmware.manifest'
 
-    settings_manifest = PREPARED / 'settings-manifest.json'
-    settings_manifest.parent.mkdir(parents=True, exist_ok=True)
-    settings_manifest.write_text(json.dumps({
-        'source': json.loads((PROJECT / 'device/gnome-control-center/source.json').read_text()),
-        'binary_sha256': sha256_file(settings_bin),
-    }, indent=2) + '\n')
-
     # Paths are absolute: build-liuqin-image.py resolves relative values
     # against the JSON file's own directory, not against the project.
     inputs = {
@@ -266,8 +233,6 @@ def cmd_run() -> None:
         'STOCK_BASE_DIR': str(PROJECT / 'tools/local/roms/liuqin/OS2.0.6.0.VMYCNXM/analysis/vendor_boot/dtbs'),
         'SENSOR_STACK_TAR': str(sensor_tar),
         'SENSOR_STACK_SHA256': sha256_file(sensor_tar),
-        'POWER_SETTINGS_BINARY': str(settings_bin),
-        'POWER_SETTINGS_MANIFEST': str(settings_manifest),
         'BUSYBOX': str(PROJECT / 'tools/local/busybox-arm64/usr/bin/busybox'),
         'MKBOOTIMG_DIR': str(PROJECT / 'tools/local/aosp-mkbootimg'),
         'FINGERPRINT_BUNDLE': str(fingerprint_build_input()),

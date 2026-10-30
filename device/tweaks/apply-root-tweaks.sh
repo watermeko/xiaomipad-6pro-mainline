@@ -33,12 +33,6 @@ shift
 purge=1
 user_name=
 skip_user=0
-# Which desktop session the per-account half is being applied for.  The masks
-# in [mask-user] are a GNOME Shell optimisation and the ones in
-# [mask-user-phosh] are Phosh-specific; applying either set under the other
-# session is what broke Phosh's RequiredComponents.  auto reads
-# XDG_CURRENT_DESKTOP, which is "ubuntu:GNOME" or "Phosh:GNOME" here.
-session=auto
 skip_system=0
 dry_run=0
 while [ "$#" -gt 0 ]; do
@@ -46,7 +40,6 @@ while [ "$#" -gt 0 ]; do
 	--no-purge) purge=0 ;;
 	--dry-run) dry_run=1 ;;
 	--no-user) skip_user=1 ;;
-	--session) shift; [ "$#" -gt 0 ] || die '--session needs a value'; session=$1 ;;
 	--user-only) skip_user=0; skip_system=1 ;;
 	--user) shift; [ "$#" -gt 0 ] || die '--user needs an account name'; user_name=$1 ;;
 	*) die "unknown argument: $1" ;;
@@ -92,9 +85,9 @@ install_file etc/systemd/zram-generator.conf 0644
 # installed system applies exactly what the image builder applied.
 install_file usr/share/liuqin/root-trim.txt 0644
 install_file usr/local/sbin/liuqin-root-trim 0755
-# Hides the Android firmware partitions from udisks2, and so from the dock and
-# Files.  The rule only changes what the desktop is offered; the device nodes
-# and the partitions themselves are untouched.
+# Hides the Android firmware partitions from udisks2, and so from Dolphin and
+# any other file manager.  The rule only changes what the desktop is offered;
+# the device nodes and the partitions themselves are untouched.
 install_file etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 0644
 
 # --- the masks --------------------------------------------------------------
@@ -117,8 +110,6 @@ mask() { # <system|user> <unit>
 	mv -f "$tmp" "$dst"
 	[ "$(readlink "$dst")" = /dev/null ] || die "mask did not land: $dst"
 }
-mask system colord.service
-mask user localsearch-3.service
 # The update notifiers: their configuration belongs to packages the trim
 # removes, but an installed tablet may still have them for the length of one
 # boot, and a masked timer cannot fire in that window.
@@ -149,105 +140,48 @@ reload_udev
 # the installer's, so nothing to do here beyond leaving it alone.
 fi
 
-# --- per-user units and extensions ------------------------------------------
+# --- per-account entries ----------------------------------------------------
 # [mask-user] is different from the system masks above: these belong to a
-# session, so they go into the live user's systemd --user instance and the
-# user's dconf, not into /etc.  That is also why this part needs a running
+# session, so they go into the live user's own systemd --user instance or
+# ~/.config, not into /etc.  That is also why this part needs a running
 # session: on the installer's extracted tree there is no user yet, and a
-# second account on the tablet may legitimately want them.
+# second account on the tablet may legitimately want the opposite.
 #
-#   gsd:<unit>         mask a GNOME settings-daemon unit
-#   gvfs:<unit>        mask a gvfs volume monitor
-#   extension:<uuid>   disable a GNOME Shell extension
+#   unit:<unit>          mask a systemd --user unit
+#   autostart:<file>     hide an XDG autostart entry in ~/.config/autostart
 #
 # With --no-user this section is skipped, which is what the installer passes.
-case $session in
-auto)
-	case ${XDG_CURRENT_DESKTOP:-} in
-	*Phosh*) session=phosh ;;
-	*GNOME*) session=gnome ;;
-	*) session=other ;;
-	esac
-	;;
-gnome | phosh | other) : ;;
-*) die "--session must be auto, gnome, phosh or other" ;;
-esac
-
 mask_user() {
 	# Read the tree's own list when it is there (a real system), and the staged
 	# payload otherwise (a --dry-run before anything is installed).
 	trim=$root/usr/share/liuqin/root-trim.txt
 	[ -f "$trim" ] || trim=$here/payload/usr/share/liuqin/root-trim.txt
-	[ -f "$trim" ] || { say 'no trim list, nothing to mask per user'; return 0; }
+	[ -f "$trim" ] || { say 'no trim list, nothing to apply per account'; return 0; }
 
-	section_entries() { # <section>
-		awk -v want="$1" '
-			$0 == "[" want "]" { inside = 1; next }
-			/^\[/ { inside = 0 }
-			inside && $0 !~ /^[[:space:]]*(#|$)/ { print $1 }
-		' "$trim"
-	}
+	entries=$(awk '
+		$0 == "[mask-user]" { inside = 1; next }
+		/^\[/ { inside = 0 }
+		inside && $0 !~ /^[[:space:]]*(#|$)/ { print $1 }
+	' "$trim")
+	[ -n "$entries" ] || { say 'no per-account entries'; return 0; }
 
-	# The section that belongs to the session that is starting, and the one
-	# that belongs to the other session.  Anything the other session asked for
-	# is removed here, so switching desktops cannot leave a stale mask behind -
-	# which is exactly how a Phosh session ended up starting without the
-	# RequiredComponents that [mask-user] masks.
-	case $session in
-	gnome) active=mask-user inactive=mask-user-phosh ;;
-	phosh) active=mask-user-phosh inactive=mask-user ;;
-	*) active= inactive='mask-user mask-user-phosh' ;;
-	esac
-
-	entries=
-	for section in $active; do
-		entries="$entries $(section_entries "$section")"
-	done
-	stale=
-	for section in $inactive; do
-		stale="$stale $(section_entries "$section")"
-	done
-	[ -n "$entries$stale" ] ||
-		{ say "no per-user entries for a $session session"; return 0; }
-
-	# The caller must name the account; guessing would mask units in the wrong
+	# The caller must name the account; guessing would write into the wrong
 	# session on a multi-user tablet.
 	[ -n "$user_name" ] || die '--no-user was not given but no user account was named'
 	uid=$(sed -n "s/^$user_name:x:\([0-9]*\):.*/\1/p" "$root/etc/passwd")
 	[ -n "$uid" ] || die "no such account in this tree: $user_name"
 	[ -d "$root/home/$user_name" ] || die "the account has no home directory: $user_name"
 	user_units=$root/home/$user_name/.config/systemd/user
+	user_autostart=$root/home/$user_name/.config/autostart
 
 	units=
-	extensions=
+	autostarts=
 	for entry in $entries; do
 		case $entry in
-		gsd:* | gvfs:* | unit:*) units="$units ${entry#*:}" ;;
-		extension:*) extensions="$extensions ${entry#*:}" ;;
-		*) die "unrecognised entry for a $session session: $entry" ;;
+		unit:*) units="$units ${entry#*:}" ;;
+		autostart:*) autostarts="$autostarts ${entry#*:}" ;;
+		*) die "unrecognised per-account entry: $entry" ;;
 		esac
-	done
-
-	# Remove what the other session asked for.  Only links this product wrote
-	# are touched: a mask the account made for its own reasons also points at
-	# /dev/null, so the names come from the trim list rather than from whatever
-	# happens to be in the directory.
-	for entry in $stale; do
-		case $entry in
-		gsd:* | gvfs:* | unit:*) ;;
-		*) continue ;;
-		esac
-		unit=${entry#*:}
-		case " $units " in *" $unit "*) continue ;; esac
-		dst=$user_units/$unit
-		if [ -L "$dst" ] && [ "$(readlink "$dst")" = /dev/null ]; then
-			if [ "$dry_run" = 1 ]; then
-				say "would unmask per user (not used by $session): $unit"
-			else
-				rm -f "$dst"
-				say "unmasked per user (not used by $session): $unit"
-			fi
-		fi
 	done
 
 	if [ -n "$units" ]; then
@@ -259,7 +193,7 @@ mask_user() {
 			# A symlink to /dev/null in the user's unit directory is the same
 			# mask systemd applies for a user unit; no daemon has to be running
 			# for it to take effect on the next login.
-			say "masking per-user units for $user_name ($session):$units"
+			say "masking per-user units for $user_name:$units"
 			for unit in $units; do
 				dst=$user_units/$unit
 				mkdir -p "$(dirname -- "$dst")"
@@ -272,79 +206,32 @@ mask_user() {
 		fi
 	fi
 
-	# Phosh's on-screen keyboard suppresses itself whenever an input device with
-	# keyboard capability is present (sm.puri.phosh.osk ignore-hw-keyboards).
-	# On this tablet the pogo keyboard keeps enumerating "Xiaomi Keyboard" even
-	# when it is folded behind the panel - the hall switch reports tablet mode at
-	# the same time - so Phosh concluded there was a keyboard and never showed
-	# the on-screen one: with the tablet in hand, no text field could be typed
-	# into at all.  Turning the key on makes the keyboard follow text input
-	# instead of device presence.
-	phosh_osk=
-	if [ "$session" = phosh ]; then
-		phosh_osk=1
-	fi
-
-	if [ -n "$extensions" ] || [ -n "$phosh_osk" ]; then
+	# An XDG autostart entry is hidden by a same-named desktop file in the
+	# user's own autostart directory with Hidden=true; that is the only way to
+	# switch one off without editing a file the package manager owns.
+	if [ -n "$autostarts" ]; then
 		if [ "$dry_run" = 1 ]; then
-			for uuid in $extensions; do
-				say "would disable extension: $uuid"
+			for entry in $autostarts; do
+				say "would hide autostart entry: $entry"
 			done
-			if [ -n "$phosh_osk" ]; then
-				say 'would make the on-screen keyboard ignore the pogo keyboard'
-			fi
 			return 0
 		fi
-
-		if [ "$skip_system" = 1 ]; then
-			# A live session: write the keys through dconf.  An earlier version
-			# wrote a text keyfile to ~/.config/dconf/db/liuqin-tweaks and pointed
-			# a profile at it, but file-db: only accepts databases built by
-			# `dconf compile`, so the text file was never read and none of these
-			# settings ever took effect.  dconf write needs no profile and reaches
-			# the database the session is already using.
-			if [ -n "$extensions" ]; then
-				say "disabling extensions for $user_name:$extensions"
-				# GVariant list literal of quoted strings: ['uuid', 'uuid']
-				q=\'
-				list=$(for uuid in $extensions; do
-					printf "%s%s%s, " "$q" "$uuid" "$q"
-				done)
-				dconf write /org/gnome/shell/disabled-extensions \
-					"[${list%, }]" ||
-					die 'could not write the disabled extension list'
-			fi
-			if [ -n "$phosh_osk" ]; then
-				say 'on-screen keyboard now ignores the pogo keyboard'
-				dconf write /sm/puri/phosh/osk/ignore-hw-keyboards true ||
-					die 'could not write the on-screen keyboard setting'
-			fi
-		else
-			# Staging a tree that is not running: leave the text keyfile where
-			# dconf update compiles it on the target (/etc/dconf/db/local.d).
-			keyfile=$root/etc/dconf/db/local.d/10-liuqin-tweaks
-			mkdir -p "$(dirname -- "$keyfile")"
+		say "hiding autostart entries for $user_name:$autostarts"
+		for entry in $autostarts; do
+			dst=$user_autostart/$entry
+			mkdir -p "$(dirname -- "$dst")"
+			tmp=$dst.liuqin-tweaks.$$
 			{
-				printf '# Written by apply-root-tweaks.sh from the per-user sections\n'
-				printf '# of /usr/share/liuqin/root-trim.txt.  The reasons are in the\n'
-				printf '# sections themselves.\n'
-				if [ -n "$extensions" ]; then
-					q=\'
-					list=$(for uuid in $extensions; do
-						printf "%s%s%s, " "$q" "$uuid" "$q"
-					done)
-					printf '\n[org/gnome/shell]\n'
-					printf 'disabled-extensions=[%s]\n' "${list%, }"
-				fi
-				if [ -n "$phosh_osk" ]; then
-					printf '\n[sm/puri/phosh/osk]\nignore-hw-keyboards=true\n'
-				fi
-			} >"$keyfile"
-			chmod 0644 "$keyfile"
-			say "staged dconf keys in /etc/dconf/db/local.d (dconf update compiles them)"
-		fi
+				printf '[Desktop Entry]\n'
+				printf 'Type=Application\n'
+				printf 'Name=%s\n' "${entry%.desktop}"
+				printf 'Hidden=true\n'
+			} >"$tmp"
+			mv -f "$tmp" "$dst"
+			grep -qx 'Hidden=true' "$dst" ||
+				die "autostart override did not land: $dst"
+		done
 	fi
-
 }
 
 # --- the trim ---------------------------------------------------------------
@@ -384,7 +271,7 @@ fi
 fi
 
 if [ "$skip_user" = 1 ]; then
-	say 'per-user masks skipped (--no-user): no account exists in this tree yet'
+	say 'per-account entries skipped (--no-user): no account exists in this tree yet'
 else
 	mask_user
 fi

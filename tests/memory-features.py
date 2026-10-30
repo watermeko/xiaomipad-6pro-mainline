@@ -61,8 +61,18 @@ FEATURES = {
                             'update-notifier', 'fwupd', 'cups', 'cups-browsed',
                             'modemmanager', 'rsyslog', 'networkd-dispatcher',
                             'switcheroo-control', 'evolution-data-server',
-                            'gnome-calendar'],
-        'packages_present': ['gdm3', 'gnome-shell', 'nautilus', 'localsearch',
+                            'gnome-calendar',
+                            # The GNOME/Phosh session this product replaced.
+                            'gdm3', 'gnome-shell', 'ubuntu-session',
+                            'gnome-session-bin', 'gnome-settings-daemon',
+                            'gnome-initial-setup', 'gnome-control-center',
+                            'gnome-snapshot', 'nautilus', 'localsearch',
+                            'xdg-desktop-portal-gnome', 'ibus',
+                            'phosh', 'phoc', 'squeekboard', 'phosh-osk-stevia',
+                            'xdg-desktop-portal-phosh'],
+        'packages_present': ['sddm', 'plasma-mobile', 'plasma-workspace',
+                             'kwin-wayland', 'powerdevil', 'dolphin',
+                             'plasma-camera', 'fcitx5',
                              'pipewire', 'wireplumber', 'fprintd',
                              'iio-sensor-proxy', 'libqmi-glib5', 'libqrtr-glib0'],
     },
@@ -94,16 +104,34 @@ FEATURES = {
                          'modem_a', 'modem_b', 'bluetooth_a', 'bluetooth_b'],
         'udev_visible': ['linux_root', 'linux_home'],
     },
+    'session-defaults': {
+        'why': 'the login manager and the Plasma session defaults are what make '
+               'a fresh install boot into Plasma Mobile with the idle, lock and '
+               'power-button policy this product measured; they are files, not '
+               'package defaults, so nothing else proves they landed',
+        'paths': {'/etc/sddm.conf.d/10-liuqin.conf': None,
+                  '/etc/xdg/kwinrc': None,
+                  '/etc/xdg/kscreenlockerrc': None,
+                  '/etc/xdg/powerdevilrc': None,
+                  '/usr/local/bin/liuqin-power-policy': None,
+                  '/usr/local/sbin/liuqin-storage-guard': None,
+                  '/usr/local/sbin/liuqin-usb-rescue': None,
+                  '/etc/systemd/system/display-manager.service':
+                      '/lib/systemd/system/sddm.service'},
+        'content': {'/etc/xdg/powerdevilrc': 'PowerButtonAction=0',
+                    '/etc/xdg/kscreenlockerrc': 'Autolock=true',
+                    '/etc/xdg/kwinrc': 'InputMethod=',
+                    '/etc/sddm.conf.d/10-liuqin.conf': 'DisplayServer=wayland'},
+        'packages_present': ['sddm'],
+    },
     'unit-masks': {
-        'why': 'colord cannot be purged (it takes gnome-control-center with it) '
-               'and localsearch is a Depends of nautilus, so their daemons are '
-               'masked instead; the update notifiers get the same treatment for '
-               'the window before the trim removes their packages',
+        'why': 'the update notifiers belong to packages the trim removes, but '
+               'an installed tablet can still have them for the length of one '
+               'boot, and a masked timer cannot fire in that window',
         # Conditional by design: a mask is only required while the unit is still
         # shipped in /usr/lib.  Masking a unit whose package was purged proves
         # nothing, and asserting it would make the gate fail on a correct system.
-        'masked': ['system/colord.service', 'user/localsearch-3.service',
-                   'system/apt-daily.timer', 'system/apt-daily-upgrade.timer',
+        'masked': ['system/apt-daily.timer', 'system/apt-daily-upgrade.timer',
                    'system/unattended-upgrades.service',
                    'system/update-notifier-download.timer'],
     },

@@ -1,0 +1,70 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Read or change the short-press power-key policy for the active session.
+#
+#   liuqin-power-policy                 print the current policy
+#   liuqin-power-policy blank           lock and blank the panel
+#   liuqin-power-policy suspend         lock, blank, then suspend
+#   liuqin-power-policy nothing         ignore a short press
+#
+# The value lives in io.github.liuqin.power, which liuqin-power-keyd reads on
+# every press.  Until the Plasma migration this key was edited through a
+# project-patched GNOME Settings binary; that binary was the last GNOME
+# component the product needed, so the policy moved to this one-command entry
+# point instead of keeping a whole desktop toolkit for one combo box.
+set -eu
+
+schema_dir=${LIUQIN_POWER_SCHEMA_DIR:-/usr/share/liuqin/power}
+gsettings=${LIUQIN_GSETTINGS:-/usr/bin/gsettings}
+loginctl=${LIUQIN_LOGINCTL:-/usr/bin/loginctl}
+getent=${LIUQIN_GETENT:-/usr/bin/getent}
+setpriv=${LIUQIN_SETPRIV:-/usr/bin/setpriv}
+env_cmd=${LIUQIN_ENV:-/usr/bin/env}
+key=io.github.liuqin.power short-press-action
+
+usage() {
+	cat >&2 <<'EOF'
+usage: liuqin-power-policy [blank|suspend|nothing]
+
+  blank     short press locks the session and blanks the panel (default)
+  suspend   short press locks, blanks and suspends; a later press wakes
+  nothing   short press does nothing
+EOF
+	exit 64
+}
+
+# Running as root is convenient over adb; gsettings has to talk to the
+# session's dconf database, so switch to the active session's account first.
+if [ "$(id -u)" = 0 ]; then
+	session=$("$loginctl" show-seat seat0 --property=ActiveSession --value 2>/dev/null || :)
+	[ -n "$session" ] && [ "$session" != n/a ] || {
+		echo 'liuqin-power-policy: no active seat0 session' >&2
+		exit 3
+	}
+	uid=$("$loginctl" show-session "$session" --property=User --value 2>/dev/null || :)
+	name=$("$loginctl" show-session "$session" --property=Name --value 2>/dev/null || :)
+	case $uid in ''|*[!0-9]*) exit 3 ;; esac
+	[ "$uid" -ge 1000 ] && [ -n "$name" ] || exit 3
+	entry=$("$getent" passwd "$uid" 2>/dev/null || :)
+	[ -n "$entry" ] || exit 3
+	gid=$(printf '%s\n' "$entry" | cut -d: -f4)
+	home=$(printf '%s\n' "$entry" | cut -d: -f6)
+	exec "$setpriv" --reuid="$uid" --regid="$gid" --clear-groups -- \
+		"$env_cmd" -i \
+		HOME="$home" USER="$name" LOGNAME="$name" \
+		XDG_RUNTIME_DIR="/run/user/$uid" \
+		DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+		PATH=/usr/bin:/bin GSETTINGS_SCHEMA_DIR="$schema_dir" \
+		"$0" "$@"
+fi
+
+case ${1:-get} in
+get)
+	exec "$gsettings" get $key
+	;;
+blank | suspend | nothing)
+	exec "$gsettings" set $key "'$1'"
+	;;
+*) usage ;;
+esac

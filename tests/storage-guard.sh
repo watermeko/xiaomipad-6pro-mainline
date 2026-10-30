@@ -1,5 +1,5 @@
 #!/bin/sh
-# Host-side execution tests for the GNOME storage guard.
+# Host-side execution tests for the native storage guard.
 #
 # The guard is the stage-2 counterpart of the initramfs UFS seal: it runs once
 # from the real root and must keep exactly the root mount's parent disk and
@@ -8,20 +8,25 @@
 # re-sealed linux_home because the guard only knew the root mount; six seconds
 # later systemd logged
 #   mount: /home: WARNING: source write-protected, mounted read-only
-# and gnome-initial-setup could not create the user's home.  This suite runs
+# and the first-boot account creation could not make the user's home.  This
+# suite runs
 # the real script under BusyBox ash (fallback: sh) against a synthetic mounts
 # table and a state-tracking blockdev stub, for both layouts and every invalid
 # /home shape.  An invalid /home is not admitted and is sealed with the
 # siblings; it must never take the root down, because /home is nofail by
 # design and the initramfs deliberately leaves an unverified linux_home sealed.  The script's device paths stay at their shipped defaults; the
-# fixture reaches in only through the LIUQIN_GNOME_GUARD_TEST_* overrides.
+# fixture reaches in only through the LIUQIN_GUARD_TEST_* overrides.
 
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-guard_source=${LIUQIN_GUARD_SCRIPT:-$project_root/device/gnome-overlay/usr/local/sbin/liuqin-gnome-storage-guard}
-guard_unit=$project_root/device/gnome-overlay/etc/systemd/system/liuqin-gnome-storage-guard.service
-real_marker=$project_root/device/gnome-overlay/etc/liuqin-gnome-root
+guard_source=${LIUQIN_GUARD_SCRIPT:-$project_root/device/root-overlay/usr/local/sbin/liuqin-storage-guard}
+guard_unit=$project_root/device/root-overlay/etc/systemd/system/liuqin-storage-guard.service
+# The marker is written by the native-root assembler, not shipped in the
+# overlay; the fixture reproduces its exact bytes so the guard's pinned hash is
+# still checked against the real thing.
+real_marker=$(mktemp)
+printf 'liuqin-native-root-v1\n' >"$real_marker"
 for input in "$guard_source" "$guard_unit" "$real_marker"; do
 	[ -f "$input" ] ||
 		{ printf '%s\n' "test-liuqin-guard: missing: $input" >&2; exit 1; }
@@ -144,11 +149,11 @@ split_fixture() { # the split-layout handoff: linux_home mounted and opened
 run_guard() {
 	status=0
 	env PATH="$bin:/usr/bin:/bin" \
-		LIUQIN_GNOME_GUARD_TEST_BUSYBOX="$bin/bb" \
-		LIUQIN_GNOME_GUARD_TEST_MARKER="$marker" \
-		LIUQIN_GNOME_GUARD_TEST_DEV_ROOT="$dev" \
-		LIUQIN_GNOME_GUARD_TEST_MOUNTS="$mounts" \
-		LIUQIN_GNOME_GUARD_TEST_KMSG="$kmsg" \
+		LIUQIN_GUARD_TEST_BUSYBOX="$bin/bb" \
+		LIUQIN_GUARD_TEST_MARKER="$marker" \
+		LIUQIN_GUARD_TEST_DEV_ROOT="$dev" \
+		LIUQIN_GUARD_TEST_MOUNTS="$mounts" \
+		LIUQIN_GUARD_TEST_KMSG="$kmsg" \
 		TEST_STATE="$state" \
 		TEST_COMMAND_LOG="$command_log" \
 		TEST_MARKER_STAT="$TEST_MARKER_STAT" \
@@ -159,13 +164,13 @@ run_guard() {
 expect_pass() { # NAME PASS-LINE
 	[ "$status" = 0 ] ||
 		fail "$1: the guard failed: $(cat "$case_root/output")"
-	grep -qxF "liuqin-gnome-guard: PASS ($2)" "$kmsg" ||
+	grep -qxF "liuqin-guard: PASS ($2)" "$kmsg" ||
 		fail "$1: expected the PASS line '$2', got: $(cat "$kmsg")"
 }
 
 expect_fail() { # NAME CRITICAL-MESSAGE
 	[ "$status" != 0 ] || fail "$1: the guard passed unexpectedly"
-	grep -qxF "liuqin-gnome-guard: critical: $2" "$kmsg" ||
+	grep -qxF "liuqin-guard: critical: $2" "$kmsg" ||
 		fail "$1: expected critical '$2', got: $(cat "$kmsg")"
 	grep -qx 'bb mount -o remount,ro /' "$command_log" ||
 		fail "$1: the root filesystem was not remounted read-only"
@@ -174,9 +179,9 @@ expect_fail() { # NAME CRITICAL-MESSAGE
 expect_degraded() { # NAME REASON
 	[ "$status" = 0 ] ||
 		fail "$1: the guard failed instead of degrading: $(cat "$kmsg")"
-	grep -qxF "liuqin-gnome-guard: warning: /home not admitted read-write: $2; sealing it with the siblings" "$kmsg" ||
+	grep -qxF "liuqin-guard: warning: /home not admitted read-write: $2; sealing it with the siblings" "$kmsg" ||
 		fail "$1: expected the /home warning '$2', got: $(cat "$kmsg")"
-	grep -qxF 'liuqin-gnome-guard: PASS (6 nodes; root pair rw, all siblings ro)' "$kmsg" ||
+	grep -qxF 'liuqin-guard: PASS (6 nodes; root pair rw, all siblings ro)' "$kmsg" ||
 		fail "$1: expected the legacy PASS line, got: $(cat "$kmsg")"
 	if grep -q 'bb mount' "$command_log"; then
 		fail "$1: the root filesystem was remounted"
@@ -272,4 +277,4 @@ rm "$marker"
 run_guard
 expect_fail marker-missing 'root marker missing'
 
-printf '%s\n' 'liuqin GNOME storage guard execution tests: PASS'
+printf '%s\n' 'liuqin storage guard execution tests: PASS'
