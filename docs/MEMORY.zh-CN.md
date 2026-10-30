@@ -401,6 +401,58 @@ KWin 同理跟着降，只是它自己的数字会随会话画过什么而变（
 17 分钟、且开过一次启动器和任务切换器后 2156 MB）。有意义的是上面的 PSS 表；
 `free` 把共享缓冲和 slab 都算进去了。
 
+### 内核不会自己把页交出来：把空载会话“圆整”进 zram
+
+即使做了上面所有事，内核仍然什么都不还：整整一次开机 `zram` 的已存字节都是 **0**，
+因为“把页交给 swap”是对内存压力的反应，而空载平板没有压力。内核里已经有现成机制
+（`memory.reclaim` 进主线于 5.19）：按 cgroup、按需触发，不需要桌面配合。
+Android 解决同一个问题用的是对后台进程 `madvise(MADV_PAGEOUT)`。
+
+这个写操作可以带一个 swap 提示，而提示才是关键：
+`echo "516M swappiness=200" > /sys/fs/cgroup/user.slice/memory.reclaim`
+让内核优先选择匿名页而不是 page cache。
+
+| 轮次 | 请求量 | 会话 `memory.current` | 其中匿名 | 其中 page cache | 之后 zram |
+|---|---:|---:|---:|---:|---:|
+| 首次，开机 3 分钟 | 516 MB (8 %) | 2320 → 1779 MB | −116 MB | −306 MB | 17 MB |
+| 周期，2 % | 129 MB | 1795 → 1666 MB | −125 MB | −1 MB | 26 MB |
+
+首次那一轮主要吃 page cache：开机时它持有的一切都是几秒前刚碰过的，而 page cache 本来
+就算在 `MemAvailable` 里 —— 所以它真实收益是匿名页那一部分。因此策略是 `MemTotal` 的
+**4 % / 2 %**：匿名收益相同，丢弃的缓存减半。真正把长会话圆整起来的是周期性轮次，
+到那时目标里已经没有热页，内核几乎只拿匿名页（上表第三列：一次写入、−125 MB、零缓存）。
+
+那一次开机总 PSS 从 **1484 → 1224 MB**（第二轮后到 1094 MB），`MemAvailable`
+4116 → 4332 MB，代价是 17–26 MB 的 zram，桌面完全不参与。
+
+能挖到多深（在同一会话中手工写更大目标）：累计回收 840 MB 后，同一会话降到
+**660 MB PSS、4856 MB `MemAvailable`，711 MB 匿名内存装在 52 MB 的 zram 里（13.6:1）**。
+这是天花板而不是策略：越过拐点多余轮次就找不到匿名页、开始丢 page cache，
+而那买不到任何东西（缓存本来就是 `MemAvailable`），回来时还要多一次 UFS 读。
+
+代价实测（回收前后做同样的事）：
+
+| 交互 | 回收前 | 回收后 |
+|---|---|---|
+| 连续开启动器 ×4，plasmashell CPU tick | 56 / 41 / 40 / 47 | 45 / 45 / 39 / 42 |
+
+100 tick 是一秒 CPU，也就是启动器每次 ~0.4–0.5 s 的 plasmashell CPU，回收没有带来可测量
+的差别。越界就是另一回事了：同一会话里的第三轮 200 MB 只给 zram 加了 3 MB，却掉了
+116 MB PSS —— 那是在拿 page cache。
+
+`liuqin-memory-reclaim` 就是这套机制：一个 oneshot 服务加一个 timer
+（`OnBootSec=180s`，之后每 30 分钟）。它刻意保守 —— `swappiness=200` 偏向匿名页、
+目标按 `MemTotal` 比例算、CPU 压力高于 20 % 就跳过、目标完不成时用 `EAGAIN` 二分回退
+（内核会先把能拿的拿完再返回失败）、没有 swap 的内核或布局静默退出。每轮把拿走的量
+按匿名/缓存两半记进 journal，所以 journal 本身就是测量：
+
+```
+rounded first: session 2320 -> 1779 MB (took 541 MB of 516 asked;
+  anon 885 -> 769, file 1390 -> 1084), zram 0 -> 17 MB
+rounded later: session 1795 -> 1666 MB (took 129 MB of 129 asked;
+  anon 683 -> 558, file 1077 -> 1073), zram 17 -> 26 MB
+```
+
 ## 回退
 
 每一步都只是包名。
@@ -485,6 +537,7 @@ xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进
 | `unit-masks` | 凡 `usr/lib/systemd` 里还有对应单元的，`etc/systemd` 必须有指向 `/dev/null` 的软链。这是**条件式**的：包都删了还去断言屏蔽毫无意义 |
 | `session-trim` | 裁剪清单里点名了每一条 `[mask-user]` 单元与自启动项；在真机上每个账号的 `~/.config/systemd/user` 有 `/dev/null` 屏蔽、`~/.config/autostart` 有 `Hidden=true` 覆盖，并且反过来断言 `kactivitymanagerd` **没有**被屏蔽——屏蔽它会让外壳黑屏 |
 | `hugepage-policy` | `/etc/tmpfiles.d/90-liuqin-thp.conf` 把策略钉成 `madvise`；在真机上 `/sys/kernel/mm/transparent_hugepage/enabled` 报告 `[madvise]`，这一半才能证明写入真的跑了，而不是只存在一个文件 |
+| `idle-reclaim` | helper、service、timer 都已安装，**并且** `timers.target.wants` 里有链接：只装上 timer 不等于它会跑。每轮把拿走的量按匿名/缓存两半记进 journal |
 
 它在三个地方跑：
 

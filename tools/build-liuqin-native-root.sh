@@ -267,6 +267,13 @@ END {
 	link_unit multi-user.target.wants liuqin-slpi.service
 	link_unit multi-user.target.wants liuqin-power-keyd.service
 	link_unit graphical.target.wants liuqin-backlight-default.service
+	# The idle reclaim is a timer, not a boot service: the pages worth rounding
+	# up are the ones the session stopped touching, which takes a few minutes to
+	# exist.  Asserted right after the tie so a unit that is shipped but never
+	# scheduled cannot read as "measured" in the docs.
+	link_unit timers.target.wants liuqin-memory-reclaim.timer
+	[ -L "$root/etc/systemd/system/timers.target.wants/liuqin-memory-reclaim.timer" ] ||
+		die 'the idle reclaim timer was not scheduled'
 	# liuqin-hide-gunyah-node.service ships in the deb but stays unwired:
 	# the detect-virt containment is deferred to a later iteration (S2-16,
 	# user decision 2026-09-12).  Wire it with
@@ -296,6 +303,13 @@ END {
 	grep -qx 'w /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise' \
 		"$root/etc/tmpfiles.d/90-liuqin-thp.conf" 2>/dev/null ||
 		die 'the overlay huge-page policy did not land'
+	# The reclaim script is executable in the overlay and shipped at 0644 by a
+	# copy loop that only looks at the mode's owner bits; both failures are the
+	# same silent no-op at boot, so assert the file and the bit that matters.
+	[ -x "$root/usr/local/libexec/liuqin-memory-reclaim" ] ||
+		die 'the idle reclaim helper did not land executable'
+	grep -q 'memory.reclaim' "$root/usr/local/libexec/liuqin-memory-reclaim" ||
+		die 'the idle reclaim helper no longer writes memory.reclaim'
 	for mask in \
 		etc/systemd/system/apt-daily.timer \
 		etc/systemd/system/apt-daily-upgrade.timer \

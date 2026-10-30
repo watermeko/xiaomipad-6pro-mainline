@@ -476,6 +476,71 @@ Successive `free -m` readings after a boot drift upward as the shell prerenders
 task switcher having been opened once).  The PSS table above is the number that
 means something; `free` counts shared buffers and slab.
 
+### Nothing hands pages back: rounding the idle session into zram
+
+Even after all of the above the kernel gave nothing back on its own: `zram` held
+**zero** stored bytes for a whole boot, because handing pages to swap is a
+reaction to memory pressure and an idle tablet has none.  The mechanism already
+shipped in the kernel (`memory.reclaim` reached mainline in 5.19) does it on
+demand, per cgroup, and does not need the desktop to cooperate.  Android solves
+the same problem with `madvise(MADV_PAGEOUT)` on background processes.
+
+The write takes an optional swap hint, and the hint is what makes this useful:
+`echo "516M swappiness=200" > /sys/fs/cgroup/user.slice/memory.reclaim` asks the
+kernel to prefer anonymous pages over page cache.
+
+| Round | asked | session `memory.current` | of which anonymous | of which page cache | zram after |
+|---|---:|---:|---:|---:|---:|
+| first, 3 min after boot | 516 MB (8 %) | 2320 → 1779 MB | −116 MB | −306 MB | 17 MB |
+| periodic, 2 % | 129 MB | 1795 → 1666 MB | −125 MB | −1 MB | 26 MB |
+
+The first round mostly eats page cache because at boot everything the session
+holds was touched seconds ago, and page cache is already counted as
+`MemAvailable` -- so its real yield is the anonymous part.  The policy is
+therefore 4 % / 2 % of `MemTotal`: same anonymous yield, half the cache thrown
+away.  The periodic rounds are what actually round up a long session, and by
+then there is nothing warm in the target and the kernel takes anonymous memory
+almost exclusively (`−125 MB` above, one write, no cache).
+
+Total PSS on that boot went **1484 → 1224 MB** after the boot round (the second
+round above took it to 1094 MB), `MemAvailable` 4116 → 4332 MB, for 17-26 MB of
+zram and no desktop involvement.
+
+How far it can go, measured by writing larger targets by hand in one session:
+reclaiming 840 MB in total took the same session to **660 MB of PSS and 4856 MB
+of `MemAvailable`, with 711 MB of anonymous memory in 52 MB of zram (13.6:1)**.
+That is the ceiling, not the policy: past the knee the extra rounds stop finding
+anonymous pages and start dropping page cache, which buys nothing (page cache is
+already `MemAvailable`) and costs a UFS read on the way back.
+
+What it costs, measured by doing the same thing before and after:
+
+| Interactions | before the reclaim | after |
+|---|---|---|
+| app launcher opened ×4, plasmashell CPU ticks | 56 / 41 / 40 / 47 | 45 / 45 / 39 / 42 |
+
+100 ticks is one second of CPU, so opening the launcher costs ~0.4-0.5 s of
+plasmashell CPU either way: the reclaim did not add anything measurable.  Going
+past the knee is a different story -- a third 200 MB round in one session added
+3 MB to zram but dropped 116 MB of PSS, i.e. it was taking page cache, which
+costs a UFS read to get back.
+
+`liuqin-memory-reclaim` is the mechanism: a oneshot service plus a timer
+(`OnBootSec=180s`, then every 30 min).  It is conservative on purpose --
+`swappiness=200` to prefer anonymous pages, a target sized from `MemTotal`, a
+skip while CPU pressure is above 20 %, an `EAGAIN` bisect because the kernel
+reclaims what it can and returns failure when it cannot reach the target, and a
+silent no-op on a kernel or a layout without swap.  Each round logs what it
+took, split into the anonymous and page-cache halves, so the journal is the
+measurement rather than the intention:
+
+```
+rounded first: session 2320 -> 1779 MB (took 541 MB of 516 asked;
+  anon 885 -> 769, file 1390 -> 1084), zram 0 -> 17 MB
+rounded later: session 1795 -> 1666 MB (took 129 MB of 129 asked;
+  anon 683 -> 558, file 1077 -> 1073), zram 17 -> 26 MB
+```
+
 ## Reverting
 
 Every step is a package name.
@@ -570,6 +635,7 @@ the evidence for it, across three surfaces:
 | `unit-masks` | for every masked unit that `usr/lib/systemd` still ships, `etc/systemd` has a `/dev/null` symlink. Conditional on purpose: masking a unit whose package was purged proves nothing |
 | `session-trim` | the trim list names each `[mask-user]` unit and autostart entry; on a live system every account's `~/.config/systemd/user` has the `/dev/null` mask and `~/.config/autostart` the `Hidden=true` override, and — the other direction — `kactivitymanagerd` is *not* masked, because masking it is what rendered the shell black |
 | `hugepage-policy` | `/etc/tmpfiles.d/90-liuqin-thp.conf` pins `madvise`; on a live system `/sys/kernel/mm/transparent_hugepage/enabled` reports `[madvise]`, which is the half that proves the write ran rather than that a file exists |
+| `idle-reclaim` | the helper, the service and the timer are installed **and** `timers.target.wants` has the link: a timer that is merely installed never runs. Each round logs what it took, split into the anonymous and page-cache halves |
 
 It runs in three places:
 

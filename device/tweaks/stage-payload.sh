@@ -12,6 +12,8 @@
 #   device/root-overlay/usr/local/sbin/liuqin-root-trim
 #   device/root-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules
 #   device/root-overlay/etc/tmpfiles.d/90-liuqin-thp.conf
+#   device/root-overlay/etc/systemd/system/liuqin-memory-reclaim.{service,timer}
+#   device/root-overlay/usr/local/libexec/liuqin-memory-reclaim
 #
 # Usage: sh device/tweaks/stage-payload.sh OUT_DIR
 # Writes OUT_DIR/payload/<relative path> for every installed file.
@@ -61,6 +63,12 @@ stage device/root-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 
 	etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 0644
 stage device/root-overlay/etc/tmpfiles.d/90-liuqin-thp.conf \
 	etc/tmpfiles.d/90-liuqin-thp.conf 0644
+stage device/root-overlay/etc/systemd/system/liuqin-memory-reclaim.service \
+	etc/systemd/system/liuqin-memory-reclaim.service 0644
+stage device/root-overlay/etc/systemd/system/liuqin-memory-reclaim.timer \
+	etc/systemd/system/liuqin-memory-reclaim.timer 0644
+stage device/root-overlay/usr/local/libexec/liuqin-memory-reclaim \
+	usr/local/libexec/liuqin-memory-reclaim 0755
 
 # The staged list must still be the shape apply-root-tweaks.sh and the image
 # builder read, or the trim silently becomes a no-op.
@@ -76,6 +84,12 @@ grep -q 'UDISKS_IGNORE' \
 grep -q '^w /sys/kernel/mm/transparent_hugepage/enabled .* madvise$' \
 	"$out/payload/etc/tmpfiles.d/90-liuqin-thp.conf" ||
 	{ printf 'stage-payload: the huge-page policy lost its madvise pin\n' >&2; exit 1; }
+grep -q 'memory.reclaim' "$out/payload/usr/local/libexec/liuqin-memory-reclaim" ||
+	{ printf 'stage-payload: the idle reclaim helper no longer writes memory.reclaim\n' >&2; exit 1; }
+[ -x "$out/payload/usr/local/libexec/liuqin-memory-reclaim" ] ||
+	{ printf 'stage-payload: the idle reclaim helper is not executable\n' >&2; exit 1; }
+grep -q '^OnBootSec=' "$out/payload/etc/systemd/system/liuqin-memory-reclaim.timer" ||
+	{ printf 'stage-payload: the idle reclaim timer lost its boot schedule\n' >&2; exit 1; }
 
 printf 'stage-payload: %s files in %s\n' \
 	"$(find "$out/payload" -type f | wc -l | tr -d ' ')" "$out/payload"

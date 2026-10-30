@@ -178,6 +178,24 @@ FEATURES = {
                     # the check is skipped.
                     '/sys/kernel/mm/transparent_hugepage/enabled': 'madvise]'},
     },
+    'idle-reclaim': {
+        'why': 'an idle session hands nothing back to the kernel: zram held zero '
+               'stored bytes for an entire boot, because handing pages to swap is '
+               'a reaction to memory pressure and an idle tablet has none.  One '
+               'cgroup write moved 548 MB of cold session pages into 47 MB of '
+               'zram and the pages that are touched come back on demand',
+        'paths': {'/usr/local/libexec/liuqin-memory-reclaim': None,
+                  '/etc/systemd/system/liuqin-memory-reclaim.service': None,
+                  '/etc/systemd/system/liuqin-memory-reclaim.timer': None,
+                  # A timer that is merely installed never runs: the wants link
+                  # is what schedules it, and the native-root build creates it.
+                  '/etc/systemd/system/timers.target.wants/liuqin-memory-reclaim.timer':
+                      None},
+        'content': {'/etc/systemd/system/liuqin-memory-reclaim.timer': 'OnBootSec=180s',
+                    '/usr/local/libexec/liuqin-memory-reclaim': 'memory.reclaim',
+                    '/etc/systemd/system/liuqin-memory-reclaim.service':
+                    'ExecStart=/usr/local/libexec/liuqin-memory-reclaim'},
+    },
 }
 
 

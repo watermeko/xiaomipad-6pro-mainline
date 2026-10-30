@@ -1,0 +1,139 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Push the session's cold pages into zram, so an idle tablet has memory free.
+#
+# Why this exists: after the trim and the huge-page fix the idle session is
+# ~1.2 GB of PSS, and a large part of it is not live.  Measured on the 8 GiB
+# unit, `memory.reclaim` with a swap hint moved hundreds of MB of the session's
+# anonymous memory into 15-27 MB of zram (zstd, ~12:1, because much of what a
+# QML shell holds is reserved-but-untouched).  Two rounds on one boot took total
+# PSS from 1484 MB to 1094 MB.  The pages that are actually touched come back on
+# demand, and the cost was not measurable: opening the app launcher four times
+# before the reclaim cost plasmashell 56/41/40/47 CPU ticks, and four times after
+# it cost 45/45/39/42 (100 ticks = 1 s of CPU).
+#
+# The kernel will not do this by itself.  Handing pages to swap is a reaction to
+# memory pressure, and an idle tablet has none -- zram sat at zero stored bytes
+# for the whole boot before this ran.  Android solves the same problem with
+# madvise(MADV_PAGEOUT) on background processes; the cgroup write is the
+# systemd-native equivalent and it does not need anything in the desktop to
+# cooperate.
+#
+# It is deliberately conservative: swappiness=200 asks the kernel to prefer
+# anonymous pages, the target is sized from MemTotal, and a round is skipped
+# while the CPU is busy.  Reclaiming beyond the knee is not free: a third 200 MB
+# round in one session added 3 MB to zram but dropped 116 MB of PSS, i.e. it was
+# taking page cache, which then costs a UFS read to get back.
+#
+# Usage: liuqin-memory-reclaim [first|later]
+#   With no argument the phase is decided by whether this boot has already
+#   reclaimed, which is what the timer's invocations are: systemd passes no
+#   per-activation arguments, so a /run stamp is the cheapest way to tell the
+#   first round (4 % of MemTotal) from the periodic ones (2 %).
+#
+# Exit status is 0 whenever nothing could or should be done; an idle tablet that
+# has no swap is a correct configuration, not a failure.
+
+set -eu
+
+say() { printf 'liuqin-memory-reclaim: %s\n' "$*"; }
+
+phase=${1:-}
+if [ -z "$phase" ]; then
+	# The timer's invocations carry no argument: the first round of a boot is
+	# the one that finds the least cold memory, the periodic ones take 2 % and
+	# mostly find nothing.  A /run stamp is enough to tell them apart and it
+	# disappears with the boot.
+	if [ -e /run/liuqin-memory-reclaim.done ]; then phase=later; else phase=first; fi
+fi
+case $phase in
+first | later) : ;;
+*) say "unknown phase: $phase"; exit 2 ;;
+esac
+
+# No swap, nothing to reclaim into: the write would only drop page cache, which
+# the kernel already does under pressure and which costs a UFS read to undo.
+if ! awk 'NR > 1 { found = 1 } END { exit !found }' /proc/swaps; then
+	say 'no swap device; leaving the page cache alone'
+	exit 0
+fi
+
+# memory.reclaim arrived in 5.19.  A kernel without it is not an error.
+[ -e /sys/fs/cgroup/user.slice/memory.reclaim ] || {
+	say 'this kernel has no cgroup memory.reclaim'
+	exit 0
+}
+
+mem_total_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+# The first round is the one that finds the least: at boot almost everything the
+# session holds is recently touched, so the kernel satisfies the write partly
+# from page cache instead of the anonymous list.  Measured at 8 % (516 MB):
+# 116 MB of anonymous memory and 306 MB of page cache, where a later round of
+# 2 % took 125 MB of anonymous memory and no cache at all.  The target is
+# therefore 4 % / 2 %: the anonymous yield is the same and half as much cache is
+# thrown away.  The periodic rounds are what actually round up a long session.
+case $phase in
+first) target_mb=$((mem_total_kb * 4 / 100 / 1024)) ;;
+later) target_mb=$((mem_total_kb * 2 / 100 / 1024)) ;;
+esac
+[ "$target_mb" -ge 32 ] || target_mb=32
+
+# Do not fight the user: if anything has been waiting on the CPU, the pages the
+# kernel would pick are the ones being used.
+busy=$(awk '/^some/ {
+		for (i = 1; i <= NF; i++) {
+			split($i, kv, "=")
+			if (kv[1] == "avg300") { print int(kv[2]); exit }
+		}
+	}' /proc/pressure/cpu 2>/dev/null || echo 0)
+if [ "${busy:-0}" -gt 20 ]; then
+	say "cpu pressure ${busy}%, skipping this round"
+	exit 0
+fi
+
+session=/sys/fs/cgroup/user.slice
+# memory.current says how much the session charges; memory.stat says which of it
+# is anonymous (the part with a compressed copy in zram afterwards) and which is
+# page cache (gone, and paid for again with a UFS read).  Both are reported,
+# because only the first is a saving: page cache was already counted as
+# MemAvailable.
+current() { awk '{ print int($1 / 1048576) }' "$session/memory.current"; }
+stat() { awk -v k="$1" '$1 == k { print int($2 / 1048576) }' "$session/memory.stat"; }
+before=$(current)
+anon_before=$(stat anon)
+file_before=$(stat file)
+stored_before=$(awk '{ print int($3 / 1048576) }' /sys/block/zram0/mm_stat 2>/dev/null || echo 0)
+
+# The swap hint is a second word on the same write.  Without it the kernel
+# reclaims whatever is cheapest to drop, which on a freshly booted session is
+# page cache, not the anonymous reservations this is aimed at.
+#
+# The write fails with EAGAIN when it cannot reach the requested amount, and it
+# has already reclaimed what it could by then: the return value is not the
+# outcome, the measured delta is.  So ask again with half the target rather than
+# reporting a failure -- a periodic round in a session that is already rounded
+# up is exactly the case that lands here.
+asked=$target_mb
+took=0
+while [ "$asked" -ge 32 ]; do
+	if printf '%s swappiness=200' "${asked}M" >"$session/memory.reclaim" 2>/dev/null; then
+		break
+	fi
+	asked=$((asked / 2))
+done
+
+after=$(current)
+anon_after=$(stat anon)
+file_after=$(stat file)
+stored_after=$(awk '{ print int($3 / 1048576) }' /sys/block/zram0/mm_stat 2>/dev/null || echo 0)
+took=$((before - after))
+if [ "$took" -le 0 ]; then
+	say "nothing cold to round in $phase phase (session ${before} MB)"
+	exit 0
+fi
+# The anonymous delta is the half that survives as a saving; the file delta is
+# page cache the kernel chose to drop because it could not reach the target from
+# the inactive anonymous list alone.
+say "rounded $phase: session ${before} -> ${after} MB (took ${took} MB of ${target_mb} asked; anon ${anon_before} -> ${anon_after}, file ${file_before} -> ${file_after}), zram ${stored_before} -> ${stored_after} MB"
+: >/run/liuqin-memory-reclaim.done

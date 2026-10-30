@@ -1,0 +1,19 @@
+[Unit]
+Description=Push the idle session's cold pages into zram
+Documentation=file:///usr/share/doc/liuqin/MEMORY.md
+# The session has to exist before its memory can be rounded up, and the first
+# minutes after a boot are the busiest the tablet ever is: plasmashell is still
+# building its QML caches and Chrome, if the user opened it, is still starting.
+# Scheduling lives in liuqin-memory-reclaim.timer; this unit is the worker.
+#
+# Nothing here fights the user: the script measures CPU pressure and skips a
+# round that would page out something in use, and it does nothing at all on a
+# kernel or a layout without swap.
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/liuqin-memory-reclaim
+Slice=background.slice
+# A tablet that cannot reclaim is not a broken tablet.
+SuccessExitStatus=0 1
+Nice=10
+IOSchedulingClass=idle

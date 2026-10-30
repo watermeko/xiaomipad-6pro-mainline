@@ -1,0 +1,18 @@
+[Unit]
+Description=Round the idle session's memory into zram, once after boot and then periodically
+Documentation=file:///usr/share/doc/liuqin/MEMORY.md
+
+[Timer]
+# Three minutes: long enough that plasmashell has finished composing its QML
+# caches (the busy window measured on the 8 GiB unit), short enough that the
+# reclaim happens inside the boot the user is watching.
+OnBootSec=180s
+# Then every half hour, which is the span in which a session that the user
+# stopped touching accumulates cold pages again.  Each round is 2 % of RAM, so
+# a round that finds nothing cold does nothing.
+OnUnitActiveSec=30min
+RandomizedDelaySec=30s
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

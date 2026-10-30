@@ -63,12 +63,16 @@ def build_deb(out):
         # data.tar: the payload files, plus the applier and its README.
         for rel in ('etc/systemd/zram-generator.conf',
                     'etc/tmpfiles.d/90-liuqin-thp.conf',
+                    'etc/systemd/system/liuqin-memory-reclaim.service',
+                    'etc/systemd/system/liuqin-memory-reclaim.timer',
+                    'usr/local/libexec/liuqin-memory-reclaim',
                     'usr/share/liuqin/root-trim.txt',
                     'usr/local/sbin/liuqin-root-trim'):
             dst = root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(payload / rel, dst)
-            os.chmod(dst, 0o755 if rel.startswith('usr/local/sbin') else 0o644)
+            os.chmod(dst, 0o755 if rel.startswith(('usr/local/sbin', 'usr/local/libexec'))
+                     else 0o644)
         # apply-root-tweaks.sh expects payload/ next to itself.  The deb carries
         # the script under /usr/lib/liuqin/ and its payload beside it, which is
         # the same layout the installer image uses.
@@ -119,6 +123,8 @@ def build_deb(out):
         (control / 'conffiles').write_text(
             '/etc/systemd/zram-generator.conf\n'
             '/etc/tmpfiles.d/90-liuqin-thp.conf\n'
+            '/etc/systemd/system/liuqin-memory-reclaim.service\n'
+            '/etc/systemd/system/liuqin-memory-reclaim.timer\n'
             '/usr/share/liuqin/root-trim.txt\n')
 
         # postinst applies the files to the live root.  The purge is skipped:
@@ -152,6 +158,12 @@ def build_deb(out):
             '\t# so the running system gets it without waiting for a reboot.\n'
             '\tcommand -v systemd-tmpfiles >/dev/null &&\n'
             '\t\tsystemd-tmpfiles --create /etc/tmpfiles.d/90-liuqin-thp.conf || :\n'
+            '\t# The idle reclaim is a timer.  Enable it and start it now, so an\n'
+            '\t# installed tablet gets the round without waiting for a reboot.\n'
+            '\tif [ -d /run/systemd/system ]; then\n'
+            '\t\tsystemctl enable liuqin-memory-reclaim.timer >/dev/null 2>&1 || :\n'
+            '\t\tsystemctl start liuqin-memory-reclaim.timer >/dev/null 2>&1 || :\n'
+            '\tfi\n'
             '\tcommand -v dconf >/dev/null && dconf update || :\n'
             '\t;;\n'
             'esac\n'

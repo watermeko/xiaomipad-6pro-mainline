@@ -297,6 +297,9 @@ build_device_support() {
 	{
 		printf '#!/bin/sh\nset -e\nif [ "$1" = configure ]; then\n'
 		printf '\tif [ -d /run/systemd/system ]; then systemctl daemon-reload || :; fi\n'
+		# A timer is not running because its unit file exists: it needs the\n'
+		# symlink into timers.target, which the native-root build creates for a\n'		# fresh image and nothing creates for an installed tablet.\n'
+		printf '\tif [ -d /run/systemd/system ]; then systemctl enable liuqin-memory-reclaim.timer >/dev/null 2>&1 || :; fi\n'
 		printf 'fi\n'
 	} >"$root/DEBIAN/postinst"
 	# Only packages that divert a distro file have these scripts; the power
