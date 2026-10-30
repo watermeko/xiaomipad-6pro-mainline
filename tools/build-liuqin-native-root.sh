@@ -333,8 +333,13 @@ END {
 	fi
 	[ ! -e "$root/etc/liuqin-first-user" ] ||
 		die 'the generic tree carries a first-user record'
-	! grep -Eq '^[[:space:]]*User[[:space:]]*=' "$root/etc/sddm.conf.d/20-autologin.conf" 2>/dev/null ||
-		die 'sddm autologin survived into the generic tree'
+	# No autologin in the generic image, in either file: the installer writes
+	# the account's name into 20-autologin.conf once it has created the account.
+	for sddm_conf in "$root"/etc/sddm.conf.d/*.conf; do
+		[ -e "$sddm_conf" ] || continue
+		! grep -Eq '^[[:space:]]*User[[:space:]]*=' "$sddm_conf" ||
+			die "sddm autologin survived into the generic tree: ${sddm_conf##*/}"
+	done
 	[ -x "$root/usr/bin/sddm" ] || die 'sddm is not installed in the tree'
 	[ -L "$root/etc/systemd/system/display-manager.service" ] &&
 		[ "$(readlink "$root/etc/systemd/system/display-manager.service")" = /lib/systemd/system/sddm.service ] ||

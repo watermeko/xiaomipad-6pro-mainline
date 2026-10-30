@@ -6,8 +6,10 @@
 # only reliable way to add ADB is to rebuild the gadget from scratch.  That
 # costs the USB link for about a second, and usb0's address is restored below.
 #
-# The parameters mirror the initramfs: same IDs, same product string, same
-# fixed MAC pair, so the host keeps the same interface name and address.
+# The IDs and the fixed MAC pair mirror the initramfs, so the host keeps the
+# same interface name and address.  The serial and product strings do not: this
+# is the running system, and tools (and the operator instructions) address the
+# tablet as `liuqin`.
 set -eu
 G=/sys/kernel/config/usb_gadget/liuqin
 UDC_NAME=a600000.usb
@@ -41,13 +43,13 @@ echo 0x1040 > idProduct
 echo 0x0100 > bcdDevice
 echo 0x0200 > bcdUSB
 mkdir -p strings/0x409
-echo 000000000001 > strings/0x409/serialnumber
+echo liuqin > strings/0x409/serialnumber
 echo "Xiaomi Pad 6 Pro mainline" > strings/0x409/manufacturer
-echo "liuqin first-boot diagnostics" > strings/0x409/product
+echo "Xiaomi Pad 6 Pro" > strings/0x409/product
 
 mkdir -p configs/c.1
 mkdir -p configs/c.1/strings/0x409
-echo "USB network diagnostics" > configs/c.1/strings/0x409/configuration
+echo "ADB and USB networking" > configs/c.1/strings/0x409/configuration
 echo 500 > configs/c.1/MaxPower
 
 mkdir -p functions/ncm.usb0
