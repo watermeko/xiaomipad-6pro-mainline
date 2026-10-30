@@ -176,6 +176,11 @@ yelp
 yelp-xsl
 zenity
 zenity-common
+# seahorse: GNOME's key manager GUI; GnuPG and SSH keys are managed from the
+# terminal or Kleopatra on this image.  deja-dup: GNOME's backup tool, whose
+# monitor was the last thing left writing org/gnome/* into the session's dconf.
+seahorse
+deja-dup
 # Ubuntu/GNOME desktop dressing that only the GNOME session read.
 ubuntu-settings
 ubuntu-docs
