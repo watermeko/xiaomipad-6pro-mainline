@@ -297,11 +297,13 @@ build_device_support() {
 	{
 		printf '#!/bin/sh\nset -e\nif [ "$1" = configure ]; then\n'
 		printf '\tif [ -d /run/systemd/system ]; then systemctl daemon-reload || :; fi\n'
-		printf '\tif command -v dconf >/dev/null; then dconf update || :; fi\n'
 		printf 'fi\n'
 	} >"$root/DEBIAN/postinst"
-	cp "$work/$pkg.preinst" "$root/DEBIAN/preinst"
-	cp "$work/$pkg.postrm" "$root/DEBIAN/postrm"
+	# Only packages that divert a distro file have these scripts; the power
+	# panel divert is gone with gnome-control-center.
+	for script in preinst postrm; do
+		[ ! -f "$work/$pkg.$script" ] || cp "$work/$pkg.$script" "$root/DEBIAN/$script"
+	done
 	pack "$pkg" arm64 'libasound2t64 (>= 1.2)' \
 		'Xiaomi Pad 6 Pro (liuqin) device support: units, helpers, rescue shell, power policy'
 }

@@ -168,8 +168,10 @@ mask_user() {
 	# The caller must name the account; guessing would write into the wrong
 	# session on a multi-user tablet.
 	[ -n "$user_name" ] || die '--no-user was not given but no user account was named'
-	uid=$(sed -n "s/^$user_name:x:\([0-9]*\):.*/\1/p" "$root/etc/passwd")
-	[ -n "$uid" ] || die "no such account in this tree: $user_name"
+	ids=$(sed -n "s/^$user_name:x:\([0-9]*\):\([0-9]*\):.*/\1 \2/p" "$root/etc/passwd")
+	uid=${ids%% *}
+	gid=${ids##* }
+	[ -n "$uid" ] && [ -n "$gid" ] || die "no such account in this tree: $user_name"
 	[ -d "$root/home/$user_name" ] || die "the account has no home directory: $user_name"
 	user_units=$root/home/$user_name/.config/systemd/user
 	user_autostart=$root/home/$user_name/.config/autostart
@@ -227,6 +229,11 @@ mask_user() {
 				printf 'Name=%s\n' "${entry%.desktop}"
 				printf 'Hidden=true\n'
 			} >"$tmp"
+			chmod 0644 "$tmp"
+			# This half usually runs as root (the installer, a package
+			# postinst, or the session unit's parent); a root-owned file in
+			# the account's own ~/.config is not the account's to edit.
+			chown "$uid:$gid" "$tmp" 2>/dev/null || true
 			mv -f "$tmp" "$dst"
 			grep -qx 'Hidden=true' "$dst" ||
 				die "autostart override did not land: $dst"

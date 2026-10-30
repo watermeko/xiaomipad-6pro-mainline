@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 #
-# Boot-time re-announce of iio-sensor-proxy for the greeter's gnome-shell.
+# Boot-time re-announce of iio-sensor-proxy for the boot-time display stack.
 #
-# gnome-shell claims the accelerometer only at the moment the SensorProxy
+# A compositor claims the accelerometer only at the moment the SensorProxy
 # D-Bus name appears while the shell is already running (2026-09-12 root
 # cause).  A fixed sleep after graphical.target is the same race the
 # session-side helper had (21:14 boot evidence): the restart can land while

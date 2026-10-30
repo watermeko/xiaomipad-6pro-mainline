@@ -1,16 +1,18 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 #
-# Re-announce iio-sensor-proxy to THIS session's gnome-shell, deterministically.
+# Re-announce iio-sensor-proxy to THIS session's compositor, deterministically.
 #
-# gnome-shell claims the accelerometer only at the moment the SensorProxy
-# D-Bus name appears (2026-09-12 root cause), so the proxy must re-appear
-# while the shell is watching.  A fixed sleep after graphical-session.target
-# is a race: the target fires while the shell is still initializing and the
-# re-appearance is missed (2026-09-12 21:14 boot evidence).  Instead:
+# A compositor claims the accelerometer only at the moment the SensorProxy
+# D-Bus name appears (2026-09-12 root cause, found on gnome-shell), so the
+# proxy must re-appear while the compositor is watching.  A fixed sleep after
+# graphical-session.target is a race: the target fires while the compositor is
+# still initializing and the re-appearance is missed (2026-09-12 21:14 boot
+# evidence).  Instead:
 #
-#   1. wait until org.gnome.Shell is owned on the SESSION bus (the shell is
-#      really up) and let mutter's monitor setup settle;
+#   1. wait until the session's compositor owns its bus name (org.kde.KWin on
+#      Plasma Mobile; it is KWin's orientation sensor that reads the proxy) and
+#      let its output setup settle;
 #   2. restart the proxy so its name re-appears;
 #   3. verify a claim actually landed (proxy CPU advances = streaming);
 #      retry a bounded number of times, then give up loudly.
@@ -26,16 +28,16 @@ owner=
 i=0
 while [ $i -lt 90 ]; do
 	owner=$(gdbus call --session -d org.freedesktop.DBus -o /org/freedesktop/DBus \
-		-m org.freedesktop.DBus.GetNameOwner org.gnome.Shell 2>/dev/null) && break
+		-m org.freedesktop.DBus.GetNameOwner org.kde.KWin 2>/dev/null) && break
 	i=$((i + 1))
 	sleep 1
 done
 case $owner in
 	*':'*) ;;
-	*) log 'gnome-shell never appeared on the session bus; aborting'; exit 1 ;;
+	*) log 'the session compositor never appeared on the session bus; aborting'; exit 1 ;;
 esac
 
-# The shell name is acquired before mutter's monitor setup completes.
+# The compositor name is acquired before its output setup completes.
 sleep 3
 
 round=1
