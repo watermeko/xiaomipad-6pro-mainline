@@ -178,6 +178,18 @@ FEATURES = {
                     # the check is skipped.
                     '/sys/kernel/mm/transparent_hugepage/enabled': 'madvise]'},
     },
+    'kded-modules': {
+        'why': 'kded6 loads ~18 modules at login and most of them serve hardware '
+               'or behaviour this image does not have (an APN autodetect for a '
+               'modem the trim list removes, a donation nag, a look-and-feel '
+               'switcher that reacts to distro upgrades).  This is not a memory '
+               'win -- the daemon is mostly the Qt/KIO libraries it shares -- but '
+               'it is the difference between a daemon that does nothing and one '
+               'that keeps trying',
+        'paths': {'/etc/xdg/kdedrc': None},
+        'content': {'/etc/xdg/kdedrc':
+                    '[Module-kded_plasma_mobile_autodetect_apn]\nautoload=false'},
+    },
     'idle-reclaim': {
         'why': 'an idle session hands nothing back to the kernel: zram held zero '
                'stored bytes for an entire boot, because handing pages to swap is '

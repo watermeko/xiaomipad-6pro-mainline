@@ -471,6 +471,35 @@ Three things were identified and left alone rather than traded away:
 activated; it is what Plasma's update UI talks to), and the document portal pair
 above.  `adb` stays because it is how this device is debugged.
 
+### Trimming Plasma itself: what moved, and what did not
+
+With the session masks done, the remaining Plasma processes were examined one
+by one.  Three findings, none of them a large saving:
+
+- **kded6 modules.**  The daemon loads 18 modules at login; seven of them serve
+  hardware or behaviour this image does not have (an APN autodetect for the
+  modem the trim list removes, a donation nag, a low-disk notifier the storage
+  guard replaces, a look-and-feel switcher).  `/etc/xdg/kdedrc` turns them off
+  and the set drops to 11, but kded6's own PSS does not move outside its
+  restart-to-restart variance (64 MB with everything loaded, 55-75 MB with
+  eleven): the daemon is mostly the Qt/KIO/Framework libraries it shares with
+  the rest of the session.  Shipped for the behaviour, not for the bytes.
+- **KWin effects.**  Blur is not loaded here at all -- Plasma Mobile does not
+  use it -- and of the 29 effects KWin has loaded, only `mobiletaskswitcher` is
+  ever active.  There is no pool of unused effects to switch off.
+- **KWin plugins.**  The compositor maps the keyboard-accessibility plugins
+  (`MouseKeys`, `StickyKeys`, `SlowKeys`, `BounceKeys`), `krunnerintegration`,
+  `TouchpadShortcuts`, `nightlight`, `screenshot` and `screencast`.  Three of
+  those serve hardware this tablet does not have (a touchpad, a physical krunner
+  shortcut), but they are small and the code they pull in is shared with
+  `libkwin`, so they were left alone.
+
+The measurements also say where the pressure is *not*: the shell (`plasmashell`)
+and the compositor are 400-490 MB together and they are what the session needs,
+`fcitx5` is 47-63 MB and is the Chinese input method, and the rest is 10-50 MB
+daemons.  That is the argument for the zram round below: on this desktop the
+remaining headroom is in *how much of it is resident*, not in what is loaded.
+
 Successive `free -m` readings after a boot drift upward as the shell prerenders
 (`used` 1493 MB at two minutes, 2156 MB at seventeen with the launcher and the
 task switcher having been opened once).  The PSS table above is the number that
@@ -636,6 +665,7 @@ the evidence for it, across three surfaces:
 | `session-trim` | the trim list names each `[mask-user]` unit and autostart entry; on a live system every account's `~/.config/systemd/user` has the `/dev/null` mask and `~/.config/autostart` the `Hidden=true` override, and — the other direction — `kactivitymanagerd` is *not* masked, because masking it is what rendered the shell black |
 | `hugepage-policy` | `/etc/tmpfiles.d/90-liuqin-thp.conf` pins `madvise`; on a live system `/sys/kernel/mm/transparent_hugepage/enabled` reports `[madvise]`, which is the half that proves the write ran rather than that a file exists |
 | `idle-reclaim` | the helper, the service and the timer are installed **and** `timers.target.wants` has the link: a timer that is merely installed never runs. Each round logs what it took, split into the anonymous and page-cache halves |
+| `kded-modules` | `/etc/xdg/kdedrc` turns off the modules that serve hardware or behaviour the image does not have; the gate asserts the file and the APN module's id, because a misspelled module id is silently ignored rather than rejected |
 
 It runs in three places:
 

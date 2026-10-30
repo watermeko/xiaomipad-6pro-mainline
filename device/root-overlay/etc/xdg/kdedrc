@@ -1,0 +1,49 @@
+# kded6 modules that are turned off for this tablet.
+#
+# kded6 is the KDE daemon host: it loads ~18 modules at login and each one is a
+# library plus its working set.  What this file does is drop the ones that serve
+# something this product does not have or has replaced.
+#
+# It is not a memory optimisation, and the measurement is the reason: the module
+# set goes 18 -> 11, but kded6's own PSS does not move outside its restart-to-
+# restart variance (64 MB with every module loaded, 55-75 MB across restarts
+# with eleven), because most of the daemon is the Qt/KIO/Framework libraries it
+# shares with the rest of the session, not the modules.  It is here because each
+# of these modules is also a *behaviour* nobody wants on this tablet -- a
+# donation nag, an APN autodetect for a modem the image removes, a look-and-feel
+# switcher that reacts to distro upgrades -- and because it keeps the noise floor
+# of the next measurement down.
+#
+# What stays, and why: kscreen (outputs), networkmanagement (plasma-nm),
+# bluedevil, mprisservice, statusnotifierwatcher (the status area),
+# soliduiserver (disks), devicenotifications (a USB stick appearing),
+# plasma_accentcolor_service, audioshortcutsservice, ktimezoned, oom-notifier
+# (an OOM kill is worth a notification), plasma-session-shortcuts (global
+# shortcuts for the magnetic keyboard), kded_plasma_mobile_start.
+#
+# kded reads this as `[Module-<module id>]`, where the id is the id kded
+# reports, not the plugin file name.  A misspelled id is silently ignored, so
+# the gate asserts the ids that matter rather than the file's existence.
+
+[Module-baloosearchmodule]
+autoload=false
+
+[Module-donationmessage]
+autoload=false
+
+[Module-freespacenotifier]
+autoload=false
+
+[Module-remotenotifier]
+autoload=false
+
+[Module-appmenu]
+autoload=false
+
+[Module-lookandfeelautoswitcher]
+autoload=false
+
+# There is no WWAN modem on this tablet: the trim list removes ModemManager and
+# this module's job is to guess the APN of a modem that is not there.
+[Module-kded_plasma_mobile_autodetect_apn]
+autoload=false

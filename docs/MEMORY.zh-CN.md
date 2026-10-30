@@ -393,6 +393,27 @@ KWin 同理跟着降，只是它自己的数字会随会话画过什么而变（
 | `mytouchinput` | 37 | 键盘：两张 7.8 MB 帧图加运行时 |
 | `udisks2`、`NetworkManager`、`adbd`、`upowerd`、journald | 100 | 机器本身 |
 
+### 精简 Plasma 自身：什么动得了，什么动不了
+
+会话级屏蔽做完之后，把剩下的 Plasma 进程逐个看过。三个结论，没有一个是大的：
+
+- **kded6 模块。** 登录时加载 18 个模块，其中七个服务于这个镜像没有的硬件或行为
+  （为裁剪清单已删的 modem 猜 APN、捐款提示、被存储守护替换的低磁盘提醒、发行版升级才动的
+  look-and-feel 切换器）。`/etc/xdg/kdedrc` 把它们关掉，模块集降到 11 个，但 kded6 自身的
+  PSS 并没有跑出它重启间的波动范围（全加载 64 MB，11 个模块时 55–75 MB）：
+  这个守护的大部分是它与整个会话共享的 Qt/KIO/Framework 库。发它是因为行为，不是为了字节。
+- **KWin 特效。** 这里根本没加载 blur（Plasma Mobile 不用），而 KWin 已加载的 29 个特效里
+  只有 `mobiletaskswitcher` 会变成 active。没有一堆闲置特效可以关。
+- **KWin 插件。** 合成器映射了键盘无障碍插件（`MouseKeys`、`StickyKeys`、`SlowKeys`、
+  `BounceKeys`）、`krunnerintegration`、`TouchpadShortcuts`、`nightlight`、`screenshot`、
+  `screencast`。其中三个服务于这台平板没有的硬件（触摸板、物理键盘 krunner 快捷键），
+  但它们很小、拉进来的代码又与 `libkwin` 共享，所以没动。
+
+测量同时说明了**压力不在哪里**：外壳（`plasmashell`）加合成器一共 400–490 MB，而这是会话
+必须要的；`fcitx5` 是 47–63 MB，是中文输入法；其余都是 10–50 MB 的守护。
+这正是下面那轮 zram 回收的理由：在这个桌面上，剩下的空间在“有多少是**常驻**的”，
+而不在“加载了什么”。
+
 有三样识别出来了但选择不动：`at-spi`（16 MB，无障碍不是内存 bug）、
 `packagekitd`（16 MB，D-Bus 按需激活，Plasma 的更新界面要和它说话），
 以及上面的 document portal 一对。`adb` 留着，因为这台设备就是靠它调试的。
@@ -538,6 +559,7 @@ xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进
 | `session-trim` | 裁剪清单里点名了每一条 `[mask-user]` 单元与自启动项；在真机上每个账号的 `~/.config/systemd/user` 有 `/dev/null` 屏蔽、`~/.config/autostart` 有 `Hidden=true` 覆盖，并且反过来断言 `kactivitymanagerd` **没有**被屏蔽——屏蔽它会让外壳黑屏 |
 | `hugepage-policy` | `/etc/tmpfiles.d/90-liuqin-thp.conf` 把策略钉成 `madvise`；在真机上 `/sys/kernel/mm/transparent_hugepage/enabled` 报告 `[madvise]`，这一半才能证明写入真的跑了，而不是只存在一个文件 |
 | `idle-reclaim` | helper、service、timer 都已安装，**并且** `timers.target.wants` 里有链接：只装上 timer 不等于它会跑。每轮把拿走的量按匿名/缓存两半记进 journal |
+| `kded-modules` | `/etc/xdg/kdedrc` 关掉服务于本镜像没有的硬件/行为的模块；门禁断言文件存在以及 APN 模块的 id——写错的模块 id 会被静默忽略而不是报错 |
 
 它在三个地方跑：
 
