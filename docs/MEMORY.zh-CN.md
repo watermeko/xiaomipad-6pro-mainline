@@ -258,6 +258,8 @@ sudo apt-get install -y ./google-chrome-stable_current_arm64.deb
 （`kactivitymanagerd`、`gmenudbusmenuproxy`、`xembedsniproxy`、KWallet 与仍为
 libsecret 保留的 gnome-keyring）；这些目前都没有写进
 `device/configs/liuqin-root-trim.txt`，因为还没有按屏蔽后的空载基线测过。
+那一轮现在做完了：数字见下面的「Plasma Mobile 的空载常驻」，其中包括
+唯一一个会把会话搞死的屏蔽项。
 
 有两处 GNOME 专属部件必须跟着会话一起搬，而不是删掉：
 
@@ -270,6 +272,135 @@ libsecret 保留的 gnome-keyring）；这些目前都没有写进
   并让 PowerDevil `PowerButtonAction=0`，避免它对同一个键再动作一次。
   真机验证：按下 → 上锁并关屏，再按 → 亮屏停在锁屏，再按 → 关屏，再按 → 亮屏。
 
+## Plasma Mobile 的空载常驻（2026-10-30 实测）
+
+迁移留下的问题是「空载的 Plasma Mobile 会话到底吃多少，还能再拿掉什么」。
+本节就是那次测量。方法：从 `/proc/<pid>/smaps_rollup` 取每个进程的 PSS，按进程所属的
+systemd 单元聚合，在不开任何应用的真机上取值。用 PSS 而不是 RSS，两个进程共享的库
+不会被算两遍。
+
+### 当时在跑、但不该在跑的东西
+
+迁移换掉了 GNOME 会话，也顺手换掉了裁剪清单攒下来的全部按账号屏蔽项：
+`[mask-user]` 只剩一条（`baloo_file.desktop`），而会话里又跑起了 X11 兼容层、
+GNOME 时代的 gvfs 后端、两个 ssh agent、一个 SPICE guest agent 和 KDE 钱包解锁。
+逐项单独停掉，记录总 PSS 的下降：
+
+| 移除项 | MB | 为什么不需要 |
+|---|---:|---|
+| `plasma-xembedsniproxy` | 34 | X11 托盘协议；这里没有 X11 客户端 |
+| `plasma-gmenudbusmenuproxy` | 29 | 把 GTK 应用菜单导出给 Plasma；Plasma Mobile 没有菜单栏 |
+| `gvfs-{afc,gphoto2,goa,mtp}-volume-monitor` | 35 | iOS/PTP/MTP/在线账号宿主机，随 GNOME 会话一起没了 |
+| `ksecretd` + `kwalletd6` | 51 + 31 | `org.freedesktop.secrets` 属于 `gnome-keyring`；钱包只是被登录解锁拉起来的 |
+| `ssh-agent` + `gcr-ssh-agent` | 4 + 3 | 两个 agent，都没有客户端 |
+| `obexd` | 15 | 蓝牙对象推送；`kill` 掉会立刻自激活重启 |
+| `spice-vdagent` | 很小 | 物理机上的 QEMU guest agent；直接 purge，未单独测量 |
+| `geoclue-demo-agent` | 11 | geoclue 的示例客户端，不是 geoclue 本体 |
+| `ubuntu-insights-collect` | 峰值 116 | Ubuntu 遥测；该单元自己的日志里记着每次开机 116.2 MB 峰值 |
+
+`ksecretd` 与 `kwalletd6` 值得单独说明，因为「停掉」和「从来不会启动」是两回事：
+
+- `ksecretd` 由 `kwallet6` 的 portal 后端经 D-Bus 激活，没有对应的 unit。
+  只 `kill` 它并不能说明它属于空载基线；真正把它移出空载的是屏蔽登录解锁
+  （`pam_kwallet_init.desktop`、`plasma-kwallet-pam.service`）。它仍然可被激活，
+  所以真要 KDE 钱包的应用照样拿得到。
+- `xdg-document-portal` 与 `xdg-permission-store`（合计 26 MB）属于本项目特意保留的
+  沙箱路径（Waydroid、flatpak），所以**留着**。不需要它们的机器再加两行
+  `[mask-user]` 就能拿掉。
+
+### 会把会话搞死的那一条屏蔽
+
+`plasma-kactivitymanagerd.service` 原本是最大的单个候选（43 MB，而且这台平板在界面上
+根本没有「活动」概念），而在运行中的会话里 `systemctl stop` 它看不出任何后果。
+屏蔽就不一样了：
+
+```
+plasmashell[8269]: Aborting shell load: The activity manager daemon
+                   (kactivitymanagerd) is not running.
+```
+
+plasmashell 随后只占 50 MB、黑屏，屏幕上只剩屏幕键盘的开关按钮。
+所以它**不在**裁剪清单里，而且 `tests/memory-features.py` 现在反过来断言：
+裁剪清单不得屏蔽它 —— 免得下一次照着进程表抄的时候，又把这 43 MB 抄进去。
+
+### 屏幕键盘每小时漏 30 MB
+
+`mytouchinput` 开机跑五小时后常驻 250 MB，而刚启动时只有 48 MB；空载下实测以 8.4 KB/s
+稳定增长。原因是主循环每 20 ms 做一次 `wl_display.sync` 往返（50 次/秒），
+Go 的 Wayland 客户端每次 sync 都在对象表里注册一个新的 callback 代理，而没有任何地方
+注销它。`GODEBUG=gctrace=1` 显示存活堆涨过了它本该持有的两张 7.8 MB 帧图：
+
+| | GC 后的存活堆 | +200 s 时 RSS | +5.5 h 时 RSS |
+|---|---:|---:|---:|
+| 修复前（`roundtrip` 从不销毁） | 120 s 内 15 MB → 16 MB | 53.7 MB | 267 MB |
+| 修复后（每条路径都 `callback.Destroy()`） | 稳定在 15 MB | 47.8 MB | （不再增长） |
+
+修复只是一次调用，外加把轮询频率按实测调低：这个循环 idle 时还烧掉 2.7% 的一个核，
+所以空转间隔从 20 ms 改成 50 ms。改完实测：**每 60 s 66 个 CPU tick，原来 163**（单核 1.1%），
+RSS 稳定在 36–48 MB。`device/touchinput/README.md` 里描述的帧回调架构能彻底去掉轮询，
+但那是重写，不是修漏 —— 而漏才是无界增长的那一半。
+
+### 透明大页把整个会话向上取整了
+
+`kernel/source.json` 的 fragment 列表里带着发行版默认的
+`CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y`：它给每个匿名映射都配 2 MiB 页，不管对方要不要。
+在 6.3 GiB `MemTotal` 的机器上这在每个进程上都看得见
+（`gvfs-mtp-volume-monitor`：8.5 MB 匿名内存里有 8 MB 是大页；`polkitd`：12.9 MB 里 12 MB），
+整个会话有 1360 MB 是大页支撑的。
+
+同一次开机内交替切换 sysfs 策略、连续重启四次 `plasmashell` 的 A/B：
+
+| `transparent_hugepage/enabled` | plasmashell PSS | RSS | 其中大页 |
+|---|---:|---:|---:|
+| `always`，第 1 次 | 309 MB | 426 MB | 206 MB |
+| `madvise`，第 1 次 | 263 MB | 380 MB | 126 MB |
+| `always`，第 2 次 | 311 MB | 429 MB | 208 MB |
+| `madvise`，第 2 次 | 264 MB | 381 MB | 126 MB |
+
+`device/root-overlay/etc/tmpfiles.d/90-liuqin-thp.conf` 在每次开机时把策略钉成 `madvise`，
+并关掉 khugepaged 的 defrag。内核默认值没有动，因为改它要重编钉住的內核；
+tmpfiles 的写入发生在会话之前，而那是唯一有意义的窗口。
+KWin 同理跟着降，只是它自己的数字会随会话画过什么而变（刚启动 134 MB，
+开过启动器和任务切换器后 220 MB）。
+
+### 端到端
+
+同一台平板、同一批单元、不开应用，两行都是整个会话所有进程求和：
+
+| | 这轮之前 | 之后 |
+|---|---:|---:|
+| 总 PSS（只算桌面，排除用户自带服务） | 1849 MB | 1340–1375 MB |
+| `mytouchinput` | 250 MB，以 8.4 KB/s 增长 | 37 MB，不再增长 |
+| `plasmashell` | 362 MB | 263–272 MB |
+| `kwin_wayland` | 194 MB | 134–220 MB |
+| 会话内进程数 | 100 | 70 |
+
+剩下的部分与理由（空载会话 PSS 前列）：
+
+| 单元 | MB | 为什么留着 |
+|---|---:|---|
+| `plasmashell` | 263–272 | 外壳本体；`kactivitymanagerd` 才让它起得来 |
+| `kwin_wayland` | 134–220 | 合成器 |
+| `fcitx5` | 63 | 屏幕键盘打中文要走它 |
+| `kded6` | 60 | kscreen、自动挂载、网络状态、mpris、托盘监视 |
+| `org_kde_powerdevil` | 57 | 亮度、闲置策略、电池 |
+| `polkit-kde-agent` | 54 | 授权弹窗 |
+| `xdg-desktop-portal*` | 79 | 为沙箱应用保留的 portal 路径 |
+| `kactivitymanagerd` | 51 | plasmashell 硬性要求，见上 |
+| `ksmserver` | 44 | 会话管理 |
+| `Xwayland` | 44 | KWin 自己拉起的，不是按需（此前已否决，结论仍然成立） |
+| `wireplumber` + `pipewire` | 57 | 四扬声器 |
+| `mytouchinput` | 37 | 键盘：两张 7.8 MB 帧图加运行时 |
+| `udisks2`、`NetworkManager`、`adbd`、`upowerd`、journald | 100 | 机器本身 |
+
+有三样识别出来了但选择不动：`at-spi`（16 MB，无障碍不是内存 bug）、
+`packagekitd`（16 MB，D-Bus 按需激活，Plasma 的更新界面要和它说话），
+以及上面的 document portal 一对。`adb` 留着，因为这台设备就是靠它调试的。
+
+开机后连续几次 `free -m` 会往上飘，因为外壳在预渲染（2 分钟时 `used` 1493 MB，
+17 分钟、且开过一次启动器和任务切换器后 2156 MB）。有意义的是上面的 PSS 表；
+`free` 把共享缓冲和 slab 都算进去了。
+
 ## 回退
 
 每一步都只是包名。
@@ -280,6 +411,19 @@ sudo liuqin-root-trim               # 执行，然后重启
 sudo apt-get install snapd firefox  # 装回某个组件
 sudo rm /etc/systemd/user/localsearch-3.service   # 解除对索引器的屏蔽
 ```
+
+按账号的条目不过是账号自己目录下的符号链接和一行 desktop 文件，所以撤销一条就是一个 `rm`，
+被删掉的服务下一次启动时会自己把缓存写回来：
+
+```sh
+sudo rm /etc/tmpfiles.d/90-liuqin-thp.conf   # 让内核默认值重新生效
+rm ~/.config/systemd/user/plasma-xembedsniproxy.service   # 撤销一条屏蔽
+rm ~/.config/autostart/pam_kwallet_init.desktop           # 撤销一条自启动隐藏
+systemctl --user daemon-reload                           # 改完任一目录后执行
+```
+
+`/sys/kernel/mm/transparent_hugepage/enabled` 可以不重启就改回 `always` 做 A/B；
+重启之后由 tmpfiles 那个文件决定。
 
 内核侧没法在运行时回退：需要重新构建（`tools/build-liuqin-kernel.py`）并刷 boot 镜像。
 没有这一步时 rootfs 照样能裁，`/usr/local/sbin/liuqin-root-trim` 会如实报告
@@ -339,6 +483,8 @@ xdg portal 97 MB、gvfs 94 MB、音频 69 MB、evolution 29 MB、可裁守护进
 | `zram-swap` | 生成的 `.config` 里有 `CONFIG_ZRAM`/`ZSMALLOC`/`ZRAM_BACKEND_ZSTD`/`ZRAM_DEF_COMP_ZSTD`，`CONFIG_ZSWAP` 关闭，`/etc/systemd/zram-generator.conf` 选 zstd，装了 `systemd-zram-generator` |
 | `rootfs-trim` | 裁剪清单与 `liuqin-root-trim` 已安装，`/snap`、`/var/lib/snapd`、`snap-confine` 不存在，`[purge]` 里的包确实没装，`[keep]` 里的包和四个传感器库都在 |
 | `unit-masks` | 凡 `usr/lib/systemd` 里还有对应单元的，`etc/systemd` 必须有指向 `/dev/null` 的软链。这是**条件式**的：包都删了还去断言屏蔽毫无意义 |
+| `session-trim` | 裁剪清单里点名了每一条 `[mask-user]` 单元与自启动项；在真机上每个账号的 `~/.config/systemd/user` 有 `/dev/null` 屏蔽、`~/.config/autostart` 有 `Hidden=true` 覆盖，并且反过来断言 `kactivitymanagerd` **没有**被屏蔽——屏蔽它会让外壳黑屏 |
+| `hugepage-policy` | `/etc/tmpfiles.d/90-liuqin-thp.conf` 把策略钉成 `madvise`；在真机上 `/sys/kernel/mm/transparent_hugepage/enabled` 报告 `[madvise]`，这一半才能证明写入真的跑了，而不是只存在一个文件 |
 
 它在三个地方跑：
 

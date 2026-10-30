@@ -73,12 +73,18 @@ func (u *UI) Run() (err error) {
 			paintTook = func() time.Duration { return time.Since(d) }
 			time.Sleep(12 * time.Millisecond)
 		} else {
-			time.Sleep(20 * time.Millisecond)
+			// 50 ms, not the 20 ms this loop used to run at: every wakeup is a
+			// sync plus a read, and the idle keyboard was burning 2.7 % of a core
+			// doing nothing.  A tap still reaches the toggle button within one
+			// poll interval, which is below what a fingertip can resolve.
+			time.Sleep(50 * time.Millisecond)
 		}
-		// Poll instead of chaining wl_surface.frame callbacks: the callback
-		// proxies are never destroyed, and re-requesting one every iteration
-		// killed the connection after a handful of frames.  Polling also keeps
-		// events flowing while collapsed, so the toggle button stays tappable.
+		// Poll instead of chaining wl_surface.frame callbacks: the frame
+		// callbacks used to be re-requested without being destroyed, which
+		// exhausted the object ids and killed the connection after a handful of
+		// frames.  Polling also keeps events flowing while collapsed, so the
+		// toggle button stays tappable.  The proxies it creates are unregistered
+		// in roundtrip, so this is a wakeup cost, not a leak.
 		rt := time.Now()
 		if err := u.roundtrip(); err != nil {
 			return fmt.Errorf("polling the compositor: %w", err)

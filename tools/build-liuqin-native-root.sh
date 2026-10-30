@@ -291,6 +291,11 @@ END {
 		die 'zram-generator.conf drifted from the reviewed sizing'
 	grep -qx 'compression-algorithm = zstd' "$root/etc/systemd/zram-generator.conf" ||
 		die 'zram-generator.conf no longer selects the kernel default compressor'
+	# The huge-page policy is a tmpfiles.d write, so a tmpfiles.d directory that
+	# the overlay copy loop skipped is the same failure mode as a dropped mask.
+	grep -qx 'w /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise' \
+		"$root/etc/tmpfiles.d/90-liuqin-thp.conf" 2>/dev/null ||
+		die 'the overlay huge-page policy did not land'
 	for mask in \
 		etc/systemd/system/apt-daily.timer \
 		etc/systemd/system/apt-daily-upgrade.timer \

@@ -135,6 +135,49 @@ FEATURES = {
                    'system/unattended-upgrades.service',
                    'system/update-notifier-download.timer'],
     },
+    'session-trim': {
+        'why': 'the Plasma migration replaced the GNOME session and dropped the '
+               'per-account trim that went with it, so the image ran X11 tray '
+               'proxies, the activity database, four gvfs backends it cannot '
+               'host, two ssh agents, a SPICE guest agent and the wallet unlock '
+               'again: 265 MB of resident memory measured on the 8 GiB unit',
+        # The list carries the entries, and a live system must show them applied.
+        # The list half runs everywhere because a built image cannot have an
+        # account yet (the installer passes --no-user) while the tablet does.
+        'paths': {'/usr/share/liuqin/root-trim.txt': None},
+        'trim_units': ['plasma-xembedsniproxy.service',
+                       'plasma-gmenudbusmenuproxy.service',
+                       'gvfs-afc-volume-monitor.service',
+                       'gvfs-gphoto2-volume-monitor.service',
+                       'gvfs-goa-volume-monitor.service',
+                       'gvfs-mtp-volume-monitor.service',
+                       'obex.service', 'ssh-agent.service', 'ssh-agent.socket',
+                       'spice-vdagent.service', 'plasma-kwallet-pam.service',
+                       'ubuntu-insights-collect.timer',
+                       'ubuntu-insights-upload.timer'],
+        # kactivitymanagerd is absent on purpose: masking it stops plasmashell
+        # from loading the shell at all, see the trim list.
+        'trim_unit_absent': ['plasma-kactivitymanagerd.service'],
+        'trim_autostarts': ['xembedsniproxy.desktop', 'gmenudbusmenuproxy.desktop',
+                            'geoclue-demo-agent.desktop', 'pam_kwallet_init.desktop',
+                            'spice-vdagent.desktop',
+                            'ubuntu-report-on-upgrade.desktop'],
+    },
+    'hugepage-policy': {
+        'why': 'the pinned kernel is built CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y, '
+               'which rounds every anonymous allocation up to 2 MiB on a device '
+               'that has 6.3 GiB of MemTotal; 1360 MB of the measured session was '
+               'huge-page backed, and madvise keeps the feature while removing '
+               'the padding',
+        'paths': {'/etc/tmpfiles.d/90-liuqin-thp.conf': None},
+        'content': {'/etc/tmpfiles.d/90-liuqin-thp.conf':
+                    'w /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise',
+                    # Live-system half: the sysfs file reports the active policy
+                    # in brackets, so this needle only matches when madvise is
+                    # the one in effect.  On an extracted tree /sys is empty and
+                    # the check is skipped.
+                    '/sys/kernel/mm/transparent_hugepage/enabled': 'madvise]'},
+    },
 }
 
 
@@ -203,6 +246,32 @@ def probe(path):
         return 'missing'
     except OSError:
         return 'missing'
+
+
+def accounts():
+    """Every human account on this machine, by uid range.
+
+    apply-root-tweaks.sh applies [mask-user] per account and is told the name;
+    this is the same set.  /home also holds directories that are not accounts
+    (lost+found on an ext4 home), and those must not read as a failure.
+    """
+    homes = []
+    try:
+        entries = Path('/etc/passwd').read_text().splitlines()
+    except OSError:
+        return homes
+    for line in entries:
+        fields = line.split(':')
+        if len(fields) < 6:
+            continue
+        try:
+            uid = int(fields[2])
+        except ValueError:
+            continue
+        home = Path(fields[5])
+        if 1000 <= uid < 60000 and home.is_dir():
+            homes.append(home)
+    return homes
 
 
 def udev_properties(label):
@@ -285,6 +354,40 @@ def check(feature, spec, config, root, use_packages):
             path = tree / rel.lstrip('/')
             if path.is_file() and needle not in path.read_text(errors='replace'):
                 failures.append('%s does not contain %r' % (rel, needle))
+        # The per-account half of the trim: the list is checked everywhere, the
+        # accounts only on the machine itself, because a built image has none.
+        trim = tree / 'usr/share/liuqin/root-trim.txt'
+        live = os.path.realpath(tree) == '/'
+        homes = accounts() if live else []
+        if spec.get('trim_units') or spec.get('trim_autostarts'):
+            listing = trim.read_text(errors='replace') if trim.is_file() else ''
+            for unit in spec.get('trim_units', []):
+                if ('unit:' + unit) not in listing:
+                    failures.append('the trim list does not mask %s' % unit)
+                for home in homes:
+                    mask = home / '.config/systemd/user' / unit
+                    if mask.is_symlink() and os.readlink(mask) == '/dev/null':
+                        continue
+                    failures.append('%s is not masked for %s' % (unit, home.name))
+            for entry in spec.get('trim_autostarts', []):
+                if ('autostart:' + entry) not in listing:
+                    failures.append('the trim list does not hide %s' % entry)
+                for home in homes:
+                    hidden = home / '.config/autostart' / entry
+                    if hidden.is_file() and 'Hidden=true' in hidden.read_text(errors='replace'):
+                        continue
+                    failures.append('%s is still an autostart entry for %s'
+                                    % (entry, home.name))
+            # The other direction: a unit that must NOT be masked, because
+            # masking it breaks the session (kactivitymanagerd).
+            for unit in spec.get('trim_unit_absent', []):
+                if ('unit:' + unit) in listing:
+                    failures.append('the trim list masks %s, which the session needs' % unit)
+                for home in homes:
+                    mask = home / '.config/systemd/user' / unit
+                    if mask.is_symlink() and os.readlink(mask) == '/dev/null':
+                        failures.append('%s is masked for %s and the shell will not load'
+                                        % (unit, home.name))
         # /dev/disk/by-partlabel describes the machine this runs on, so the
         # udev side is only meaningful when the root tree is that machine.
         # An extracted image tree has no devices to inspect.

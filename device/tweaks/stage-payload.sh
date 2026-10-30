@@ -11,6 +11,7 @@
 #   device/root-overlay/etc/systemd/zram-generator.conf
 #   device/root-overlay/usr/local/sbin/liuqin-root-trim
 #   device/root-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules
+#   device/root-overlay/etc/tmpfiles.d/90-liuqin-thp.conf
 #
 # Usage: sh device/tweaks/stage-payload.sh OUT_DIR
 # Writes OUT_DIR/payload/<relative path> for every installed file.
@@ -58,6 +59,8 @@ stage device/root-overlay/usr/local/sbin/liuqin-root-trim \
 	usr/local/sbin/liuqin-root-trim 0755
 stage device/root-overlay/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules \
 	etc/udev/rules.d/90-liuqin-hide-android-volumes.rules 0644
+stage device/root-overlay/etc/tmpfiles.d/90-liuqin-thp.conf \
+	etc/tmpfiles.d/90-liuqin-thp.conf 0644
 
 # The staged list must still be the shape apply-root-tweaks.sh and the image
 # builder read, or the trim silently becomes a no-op.
@@ -70,6 +73,9 @@ grep -qx 'compression-algorithm = zstd' "$out/payload/etc/systemd/zram-generator
 grep -q 'UDISKS_IGNORE' \
 	"$out/payload/etc/udev/rules.d/90-liuqin-hide-android-volumes.rules" ||
 	{ printf 'stage-payload: the volume-hiding rule lost UDISKS_IGNORE\n' >&2; exit 1; }
+grep -q '^w /sys/kernel/mm/transparent_hugepage/enabled .* madvise$' \
+	"$out/payload/etc/tmpfiles.d/90-liuqin-thp.conf" ||
+	{ printf 'stage-payload: the huge-page policy lost its madvise pin\n' >&2; exit 1; }
 
 printf 'stage-payload: %s files in %s\n' \
 	"$(find "$out/payload" -type f | wc -l | tr -d ' ')" "$out/payload"

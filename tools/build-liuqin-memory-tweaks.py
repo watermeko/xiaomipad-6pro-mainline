@@ -62,6 +62,7 @@ def build_deb(out):
         payload = work / 'payload'
         # data.tar: the payload files, plus the applier and its README.
         for rel in ('etc/systemd/zram-generator.conf',
+                    'etc/tmpfiles.d/90-liuqin-thp.conf',
                     'usr/share/liuqin/root-trim.txt',
                     'usr/local/sbin/liuqin-root-trim'):
             dst = root / rel
@@ -116,7 +117,9 @@ def build_deb(out):
             ' The kernel side (CONFIG_ZRAM) is a boot image, not a package.\n'
             % version)
         (control / 'conffiles').write_text(
-            '/etc/systemd/zram-generator.conf\n/usr/share/liuqin/root-trim.txt\n')
+            '/etc/systemd/zram-generator.conf\n'
+            '/etc/tmpfiles.d/90-liuqin-thp.conf\n'
+            '/usr/share/liuqin/root-trim.txt\n')
 
         # postinst applies the files to the live root.  The purge is skipped:
         # this package's job is to make the tree correct, and removing packages
@@ -145,6 +148,10 @@ def build_deb(out):
             '\tawk -F: \'$3 >= 1000 && $3 < 60000 { print $1 }\' /etc/passwd |\n'
             '\t\twhile read -r account; do apply_user "$account" || exit 1; done\n'
             '\tif [ -d /run/systemd/system ]; then systemctl daemon-reload || :; fi\n'
+            '\t# The huge-page pin is a tmpfiles.d write, not a sysctl: apply it now\n'
+            '\t# so the running system gets it without waiting for a reboot.\n'
+            '\tcommand -v systemd-tmpfiles >/dev/null &&\n'
+            '\t\tsystemd-tmpfiles --create /etc/tmpfiles.d/90-liuqin-thp.conf || :\n'
             '\tcommand -v dconf >/dev/null && dconf update || :\n'
             '\t;;\n'
             'esac\n'

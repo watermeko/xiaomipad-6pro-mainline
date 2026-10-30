@@ -131,6 +131,17 @@ rsyslog
 networkd-dispatcher
 # One GPU.  switcheroo-control exists to offer a dGPU launcher.
 switcheroo-control
+# --- virtual machines and telemetry ---------------------------------------
+# spice-vdagent is the SPICE guest agent for a QEMU display server, and this is
+# a physical tablet; ubuntu-report and ubuntu-insights are Ubuntu's telemetry
+# clients (insights is its successor), and the home they would report to has
+# nothing to learn from this image.  Neither has a reverse dependency:
+# `apt-cache rdepends --installed` is empty for all three.  insights is worth
+# more than its disk: its collect job measured a 116 MB memory peak in the
+# session journal on every boot it ran on.
+spice-vdagent
+ubuntu-report
+ubuntu-insights
 # --- GNOME Shell session (replaced by Plasma Mobile) ----------------------
 # 325 MB installed, measured with dpkg-query; ~85 MB of that is
 # gnome-user-docs plus the language-pack-gnome-* sets, which only exist for
@@ -279,3 +290,84 @@ ibus-table-wubi
 # indexable content), so hiding the entry costs nothing today and keeps a
 # first-boot index from appearing once /home has files.
 autostart:baloo_file.desktop
+
+# --- X11 compatibility layers --------------------------------------------
+# The session runs no X11 client: every application on this tablet is
+# Wayland-native (Dolphin, Konsole, Chrome with --ozone-platform=wayland).
+# xembedsniproxy walks the X11 tray protocol for applications that do not
+# exist here, and gmenudbusmenuproxy exports GTK application menus into
+# Plasma's menu bar, which Plasma Mobile has no such surface for.  Measured
+# together: 63 MB resident, and the two largest processes left in the session
+# after the compositor's own helpers.
+unit:plasma-xembedsniproxy.service
+unit:plasma-gmenudbusmenuproxy.service
+autostart:xembedsniproxy.desktop
+autostart:gmenudbusmenuproxy.desktop
+
+# --- activity manager -----------------------------------------------------
+# kactivitymanagerd is deliberately NOT masked, although it is 43 MB resident
+# and this tablet has no user interface for activities: masking it was measured
+# to end the session.  plasmashell refuses to load its shell at all without the
+# daemon -- "Aborting shell load: The activity manager daemon
+# (kactivitymanagerd) is not running" -- and the tablet boots to a black screen.
+# Stopping it inside a running session looks harmless by comparison, which is
+# exactly why this had to be checked at login and not with `systemctl stop`.
+
+# --- gvfs backends this device cannot host ---------------------------------
+# Restored from the GNOME/Phosh trim, which the Plasma migration dropped: afc
+# is the iOS protocol, gphoto2 needs a camera attached over USB, goa needs
+# GNOME online accounts (removed with gnome-online-accounts), and mtp needs an
+# MTP host.  Four processes, 35 MB, and none of them has a client left in this
+# image.  gvfsd itself and gvfs-udisks2-volume-monitor stay: the file choosers
+# and the dock use those.
+unit:gvfs-afc-volume-monitor.service
+unit:gvfs-gphoto2-volume-monitor.service
+unit:gvfs-goa-volume-monitor.service
+unit:gvfs-mtp-volume-monitor.service
+
+# --- Bluetooth object push ------------------------------------------------
+# obexd serves the OBEX object-push profile, i.e. "send a file to this tablet
+# over Bluetooth".  It is started by BlueZ's D-Bus activation at every login and
+# re-activates itself immediately when stopped (measured), so it is a resident
+# 15 MB rather than an on-demand code path.  Audio (A2DP, AVRCP) does not use
+# it.  Masking obex.service covers the org.bluez.obex D-Bus alias.
+unit:obex.service
+
+# --- ssh agents -----------------------------------------------------------
+# Two agents start at login and neither has a client in this image.  The GCR
+# one stays because libsecret and the GTK keyring path expect it; the plain
+# OpenSSH agent is the one nothing asks for.
+unit:ssh-agent.service
+unit:ssh-agent.socket
+
+# --- virtual machines and telemetry ----------------------------------
+# spice-vdagent is the SPICE guest agent: it exists to talk to a QEMU display
+# server, and this is a physical tablet.  ubuntu-report is Ubuntu's telemetry
+# client; its package is purged, the autostart entry is hidden for systems
+# that still have the package (an installed tablet is not rebuilt).
+unit:spice-vdagent.service
+autostart:spice-vdagent.desktop
+autostart:ubuntu-report-on-upgrade.desktop
+# ubuntu-insights is purged above; these masks cover a tablet that still has the
+# package, which is the state an installed image can be in until liuqin-root-trim
+# runs.  Both are timers whose job is to write a telemetry report.
+unit:ubuntu-insights-collect.service
+unit:ubuntu-insights-collect.timer
+unit:ubuntu-insights-upload.service
+unit:ubuntu-insights-upload.timer
+
+# --- location demo client ------------------------------------------------
+# geoclue-demo-agent is the sample client of the geoclue stack, not geoclue
+# itself: hiding it leaves location services (and the weather plasmoid)
+# working while removing an 11 MB process that polls on behalf of nobody.
+autostart:geoclue-demo-agent.desktop
+
+# --- KDE wallet ----------------------------------------------------------
+# pam_kwallet_init (and its systemd twin plasma-kwallet-pam.service) unlock the
+# KDE wallet at login, which starts kwalletd6 on every session even though
+# nothing here uses a wallet: the org.freedesktop.secrets name is owned by
+# gnome-keyring (the libsecret backend the trim list keeps for Chrome), so
+# a wallet is never consulted.  Masking the unlock leaves the wallet daemon
+# D-Bus-activatable for an application that explicitly asks for it.
+unit:plasma-kwallet-pam.service
+autostart:pam_kwallet_init.desktop

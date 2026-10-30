@@ -313,7 +313,9 @@ directly comparable): `plasmashell` 464 MB, `kwin_wayland` 241, `kded6` 160,
 (`kactivitymanagerd`, `gmenudbusmenuproxy`, `xembedsniproxy`, KWallet vs the
 gnome-keyring that is still installed for libsecret) is the next piece of work;
 none of them is masked in `device/configs/liuqin-root-trim.txt` yet because
-nothing has been measured against the idle baseline after masking.
+nothing has been measured against the idle baseline after masking.  That pass
+has since been done: see "Steady state on Plasma Mobile" below for the numbers
+and for the one mask that turned out to end the session.
 
 Two GNOME-only pieces had to move with the session rather than be deleted:
 
@@ -327,6 +329,153 @@ Two GNOME-only pieces had to move with the session rather than be deleted:
   does not act on the same key.  Verified on the tablet: press → locked and
   DPMS off, press → on-locked, press → off, press → on-locked.
 
+## Steady state on Plasma Mobile (measured 2026-10-30)
+
+The question the migration left open was "what does an idle Plasma Mobile
+session actually cost, and what can still come out".  This section is that
+measurement.  Method: PSS summed per process from `/proc/<pid>/smaps_rollup` and
+aggregated by the systemd unit the process belongs to, taken on the tablet with
+no application open.  PSS, not RSS, so a library two processes share is not
+counted twice.
+
+### What was running and should not have been
+
+The migration replaced the GNOME session and with it every per-account mask the
+trim list had accumulated, so the `[mask-user]` section had one entry left
+(`baloo_file.desktop`) while the session ran the X11 compatibility layer, the
+GNOME-era gvfs backends, two ssh agents, a SPICE guest agent and the KDE wallet
+unlock again.  Each was stopped on its own and the drop in total PSS recorded:
+
+| Removed | MB | Why nothing needs it |
+|---|---:|---|
+| `plasma-xembedsniproxy` | 34 | X11 tray protocol; no X11 client runs here |
+| `plasma-gmenudbusmenuproxy` | 29 | exports GTK app menus; Plasma Mobile has no menubar |
+| `gvfs-{afc,gphoto2,goa,mtp}-volume-monitor` | 35 | iOS/PTP/MTP/online-accounts hosts, all gone with the GNOME session |
+| `ksecretd` + `kwalletd6` | 51 + 31 | `org.freedesktop.secrets` is owned by `gnome-keyring`; the wallet was only ever started by the login unlock |
+| `ssh-agent` + `gcr-ssh-agent` | 4 + 3 | two agents, neither with a client |
+| `obexd` | 15 | Bluetooth object push; it re-activates itself immediately after `kill` |
+| `spice-vdagent` | small | QEMU guest agent on physical hardware; purged, not measured apart |
+| `geoclue-demo-agent` | 11 | the sample client of geoclue, not geoclue itself |
+| `ubuntu-insights-collect` | 116 peak | Ubuntu telemetry; the unit's own journal line records 116.2 MB peak per boot |
+
+`ksecretd` and `xdg-document-portal` deserve their own note because "stopped"
+and "never started" are different measurements:
+
+- `ksecretd` is D-Bus-activated by `kwallet6`'s portal backend, not by a unit.
+  Killing it is not enough to know whether it belongs to an idle session; what
+  removed it from the baseline was masking the login unlock
+  (`pam_kwallet_init.desktop`, `plasma-kwallet-pam.service`).  It stays
+  activatable, so an application that really wants the KDE wallet still gets it.
+- `xdg-document-portal` and `xdg-permission-store` (26 MB together) are part of
+  the sandbox path this project deliberately keeps for Waydroid and flatpak, so
+  they stay.  A tablet without either could take them out with two more
+  `[mask-user]` lines.
+
+### The mask that ended the session
+
+`plasma-kactivitymanagerd.service` was the largest single candidate (43 MB,
+and the tablet has no user interface for activities), and stopping it in a
+running session does nothing visible.  Masking it does:
+
+```
+plasmashell[8269]: Aborting shell load: The activity manager daemon
+                   (kactivitymanagerd) is not running.
+```
+
+plasmashell then runs without a shell: 50 MB of RSS, a black panel, and the
+on-screen keyboard's toggle button as the only thing on screen.  It is
+consequently **not** in the trim list, and `tests/memory-features.py` now
+asserts the opposite direction — that the trim list does not mask it — so a
+future pass cannot re-add those 43 MB by copying a process table.
+
+### The on-screen keyboard leaked 30 MB an hour
+
+`mytouchinput` was 250 MB resident after five hours of uptime against 48 MB when
+freshly started, growing at a measured 8.4 KB/s from an idle session.  The cause
+is the poll loop: it does a `wl_display.sync` roundtrip every 20 ms (50/s), the
+Go Wayland client registers a new callback proxy per sync in its object map, and
+nothing ever unregistered it.  `GODEBUG=gctrace=1` shows the live heap climbing
+past the two 7.8 MB frame images it should be holding:
+
+| | live heap after GC | RSS at +200 s | RSS at +5.5 h |
+|---|---:|---:|---:|
+| before (`roundtrip` never destroys) | 15 MB → 16 MB in 120 s | 53.7 MB | 267 MB |
+| after (`callback.Destroy()` on every path) | flat at 15 MB | 47.8 MB | (flat) |
+
+The fix is one call, plus an honest look at the poll rate: the loop also burnt
+2.7 % of a core doing nothing, so the idle interval is 50 ms instead of 20 ms.
+Measured after: **66 CPU ticks per 60 s instead of 163** (1.1 % of one core) and
+RSS flat at 36–48 MB.  The frame-callback architecture described in
+device/touchinput/README.md would remove the polling altogether; that is a
+rewrite, not a leak fix, and the leak was the part that grew unbounded.
+
+### Transparent huge pages were rounding the whole session up
+
+`kernel/source.json`'s fragment set includes the distro default
+`CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y`, which offers every anonymous mapping
+2 MiB pages whether it asked or not.  On a 6.3 GiB `MemTotal` that is visible
+per process (`gvfs-mtp-volume-monitor`: 8.5 MB anonymous, 8 MB of it huge pages;
+`polkitd`: 12.9 MB as 12 MB) and 1360 MB of the session was huge-page backed.
+
+Reproducible A/B, same boot, four `plasmashell` restarts alternating the sysfs
+policy:
+
+| `transparent_hugepage/enabled` | plasmashell PSS | RSS | of which huge pages |
+|---|---:|---:|---:|
+| `always`, run 1 | 309 MB | 426 MB | 206 MB |
+| `madvise`, run 1 | 263 MB | 380 MB | 126 MB |
+| `always`, run 2 | 311 MB | 429 MB | 208 MB |
+| `madvise`, run 2 | 264 MB | 381 MB | 126 MB |
+
+`device/root-overlay/etc/tmpfiles.d/90-liuqin-thp.conf` pins `madvise` at every
+boot and turns khugepaged's defrag off.  The kernel default is untouched
+because changing it means rebuilding the pinned kernel; the tmpfiles write
+happens before the session starts, which is the only window that matters.
+KWin moves with it for the same reason, though its own number swings with what
+the session has drawn (134 MB after a fresh start, 220 MB after opening the
+launcher and the task switcher).
+
+### End to end
+
+Same tablet, same unit, no application open, both rows summed over every
+process in the session:
+
+| | before this pass | after |
+|---|---:|---:|
+| total PSS, desktop only (user services excluded) | 1849 MB | 1340–1375 MB |
+| `mytouchinput` | 250 MB, growing 8.4 KB/s | 37 MB, flat |
+| `plasmashell` | 362 MB | 263–272 MB |
+| `kwin_wayland` | 194 MB | 134–220 MB |
+| running processes in the session | 100 | 70 |
+
+What is left, and why, on the idle session (top of the PSS list):
+
+| Unit | MB | Why it stays |
+|---|---:|---|
+| `plasmashell` | 263–272 | the shell; `kactivitymanagerd` keeps the rest |
+| `kwin_wayland` | 134–220 | the compositor |
+| `fcitx5` | 63 | Chinese input through the on-screen keyboard |
+| `kded6` | 60 | kscreen, device automounter, network status, mpris, tray watcher |
+| `org_kde_powerdevil` | 57 | brightness, idle policy, battery |
+| `polkit-kde-agent` | 54 | privilege dialogs |
+| `xdg-desktop-portal*` | 79 | the portal path kept for sandboxed apps |
+| `kactivitymanagerd` | 51 | required by plasmashell, see above |
+| `ksmserver` | 44 | session management |
+| `Xwayland` | 44 | started by KWin itself, not on demand (rejected earlier, still true) |
+| `wireplumber` + `pipewire` | 57 | the four speakers |
+| `mytouchinput` | 37 | the keyboard, two 7.8 MB frame images plus the runtime |
+| `udisks2`, `NetworkManager`, `adbd`, `upowerd`, journald | 100 | the machine itself |
+
+Three things were identified and left alone rather than traded away:
+`at-spi` (16 MB, accessibility is not a memory bug), `packagekitd` (16 MB, D-Bus
+activated; it is what Plasma's update UI talks to), and the document portal pair
+above.  `adb` stays because it is how this device is debugged.
+
+Successive `free -m` readings after a boot drift upward as the shell prerenders
+(`used` 1493 MB at two minutes, 2156 MB at seventeen with the launcher and the
+task switcher having been opened once).  The PSS table above is the number that
+means something; `free` counts shared buffers and slab.
+
 ## Reverting
 
 Every step is a package name.
@@ -337,6 +486,20 @@ sudo liuqin-root-trim               # apply, then reboot
 sudo apt-get install snapd firefox  # put a component back
 sudo rm /etc/systemd/user/localsearch-3.service   # unmask the indexer
 ```
+
+The per-account entries are symlinks and one-line desktop files in the account's
+own configuration, so undoing one is a `rm`, and the cache the daemon may have
+written comes back on its next start:
+
+```sh
+sudo rm /etc/tmpfiles.d/90-liuqin-thp.conf   # let the kernel default apply again
+rm ~/.config/systemd/user/plasma-xembedsniproxy.service   # one mask
+rm ~/.config/autostart/pam_kwallet_init.desktop           # one autostart hide
+systemctl --user daemon-reload                           # after either
+```
+
+`/sys/kernel/mm/transparent_hugepage/enabled` can be set back to `always`
+without a reboot for an A/B; the tmpfiles file is what decides it after one.
 
 The kernel side is not runtime-reversible: it needs a rebuild
 (`tools/build-liuqin-kernel.py`) and a boot image flash. Without it the rootfs
@@ -405,6 +568,8 @@ the evidence for it, across three surfaces:
 | `zram-swap` | `CONFIG_ZRAM`/`ZSMALLOC`/`ZRAM_BACKEND_ZSTD`/`ZRAM_DEF_COMP_ZSTD` in the generated `.config`, `CONFIG_ZSWAP` off, `/etc/systemd/zram-generator.conf` selecting zstd, `systemd-zram-generator` installed |
 | `rootfs-trim` | the trim list and `liuqin-root-trim` installed, `/snap`, `/var/lib/snapd` and `snap-confine` gone, the purged packages absent, the `[keep]` packages and the four sensor libraries present |
 | `unit-masks` | for every masked unit that `usr/lib/systemd` still ships, `etc/systemd` has a `/dev/null` symlink. Conditional on purpose: masking a unit whose package was purged proves nothing |
+| `session-trim` | the trim list names each `[mask-user]` unit and autostart entry; on a live system every account's `~/.config/systemd/user` has the `/dev/null` mask and `~/.config/autostart` the `Hidden=true` override, and — the other direction — `kactivitymanagerd` is *not* masked, because masking it is what rendered the shell black |
+| `hugepage-policy` | `/etc/tmpfiles.d/90-liuqin-thp.conf` pins `madvise`; on a live system `/sys/kernel/mm/transparent_hugepage/enabled` reports `[madvise]`, which is the half that proves the write ran rather than that a file exists |
 
 It runs in three places:
 

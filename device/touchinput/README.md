@@ -190,6 +190,16 @@ and a 480 ms animation got four frames.  With three buffers and region-limited
 repaints it now runs at about 60 fps -- `MYTOUCHINPUT_INK_DEBUG=1` logs every
 frame's progress, radius and paint time.
 
+The loop polls rather than chaining `wl_surface.frame` callbacks, and that poll
+used to be free of charge in memory: `wl_display.sync` creates a callback proxy
+per call and the client library keeps it in its object map by id, so a
+roundtrip every 20 ms leaked ~8 KB/s -- 30 MB an hour, 267 MB resident after
+five hours of uptime against 48 MB when fresh.  `roundtrip` now unregisters the
+callback on every path (done, dispatch error, failed write), and the idle
+interval is 50 ms: the same loop was burning 2.7 % of a core, now 1.1 %.  A
+frame-callback design would remove the polling entirely, but that is the rewrite
+this change did not need.
+
 Icons for shift, backspace and enter are Material glyphs drawn from primitives
 on a 24x24 grid, supersampled 4x and box-filtered down to size.  The Go and
 DejaVu faces disagreed about those characters, and at keyboard sizes the result

@@ -342,9 +342,17 @@ func (u *UI) layout() []keyBox {
 
 // roundtrip waits until the compositor has delivered every event queued so far,
 // which is how you know the whole globals list has arrived.
+//
+// The callback proxy has to be unregistered on every path.  wl_display.sync
+// creates a new object per call and the client library keeps it in its object
+// map by id; this loop runs the roundtrip ~50 times a second while the keyboard
+// sits idle, so leaving them registered grew the process by ~8 KB/s -- 30 MB an
+// hour, 240 MB over a booted day.  The compositor destroys its side of the
+// callback after `done`, so this is purely local bookkeeping.
 func (u *UI) roundtrip() error {
 	callback, err := u.display.Sync()
 	if err != nil {
+		_ = callback.Destroy()
 		// The compositor closes the connection after sending wl_display.error,
 		// and the write fails before we ever read it.  Drain whatever is still
 		// queued so the error handler can report the offending request.
@@ -361,11 +369,12 @@ func (u *UI) roundtrip() error {
 	})
 	for {
 		if err := u.ctx.Dispatch(); err != nil {
+			_ = callback.Destroy()
 			return err
 		}
 		select {
 		case <-done:
-			return nil
+			return callback.Destroy()
 		default:
 		}
 	}
