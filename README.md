@@ -47,6 +47,7 @@ Use a complete installation bundle from [GitHub Releases](https://github.com/yzd
 | Restore Android | [Data and recovery instructions](docs/FLASHING.md#data-and-recovery) |
 | Reclaim memory (zram, package trim) | [Memory tweaks](#memory-tweaks), then [Memory notes](docs/MEMORY.md) |
 | Make the tablet sleep (and wake it) | [Suspend and resume](docs/SUSPEND.md) |
+| See the tray icons (Tailscale, Telegram, ...) | [System tray](#system-tray) |
 
 Prebuilt installation bundles include matching boot and root filesystem images, installation tools and checksums.
 
@@ -269,6 +270,39 @@ Reverting to the old behaviour is one key and a reload:
 sudo sed -i 's/^AutoSuspendIdleTimeoutSec=.*/AutoSuspendIdleTimeoutSec=0/' /etc/xdg/powerdevilrc
 systemctl --user restart plasma-powerdevil
 ```
+
+## System tray
+
+Plasma Mobile has no place to draw system tray icons: applications register
+with `org.kde.StatusNotifierWatcher` and nothing ever displays them (KDE bug
+483089), so Tailscale, Telegram, Syncthing and everything else that lives in a
+tray is invisible. This port patches the task panel so the icons are drawn next
+to the task switcher, home and close buttons:
+
+- the patch lives in a plasma-mobile fork, pinned in
+  [`plasma-mobile/source.json`](plasma-mobile/source.json); it adds a small
+  StatusNotifierItem host (a model that follows the registry, each item's icon,
+  title and status, and its activate/secondary-activate/context-menu methods)
+  and a row in `containments/taskpanel` that draws it;
+- [`tools/deploy-liuqin-taskpanel.py`](tools/deploy-liuqin-taskpanel.py) builds
+  that one containment on the tablet and installs it, then restarts
+  `plasma-plasmashell.service`. The applet's QML is installed as a package,
+  because the packaged plugin carries its QML compiled in and cannot be
+  replaced file by file;
+- `--uninstall` puts the packaged task panel back;
+- the build needs `build-essential cmake extra-cmake-modules qt6-base-dev
+  qt6-declarative-dev qt6-sensors-dev libplasma-dev libkf6config-dev
+  libkf6coreaddons-dev libkf6windowsystem-dev` on the tablet (its full
+  plasma-mobile build also wants KWin, KPipeWire and QCoro development files,
+  which is why the standalone CMake project exists at all).
+
+What it does and does not do: the icons appear and a tap activates the item;
+long-press context menus and tool tips are not wired up yet. Items that only
+publish `IconPixmap` are supported (they go through an image provider), and an
+item that reports `Passive` status is dimmed. Whether an application shows up
+at all is up to the application: Tailscale's daemon does not publish a tray
+item, so it needs its own GUI (`tailscale web --listen 127.0.0.1:5252`, or
+`ssh -L 5252:127.0.0.1:5252` from another machine).
 
 ## Usage and Maintenance
 

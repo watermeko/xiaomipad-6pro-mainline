@@ -234,6 +234,17 @@ sudo sed -i 's/^AutoSuspendIdleTimeoutSec=.*/AutoSuspendIdleTimeoutSec=0/' /etc/
 systemctl --user restart plasma-powerdevil
 ```
 
+## 系统托盘
+
+Plasma Mobile 没有画托盘图标的地方：应用向 `org.kde.StatusNotifierWatcher` 登记，但没有任何东西把它们显示出来（KDE bug 483089），于是 Tailscale、Telegram、Syncthing 这些托盘应用在平板上是"看不见"的。这个移植给任务面板打了补丁，把图标画在任务切换、主页、关闭三个按钮左边：
+
+- 补丁在 plasma-mobile 的 fork 里，版本锁在 [`plasma-mobile/source.json`](plasma-mobile/source.json)：加了一个小的 StatusNotifierItem host（跟踪登记表、每个条目的图标/标题/状态，以及它的 activate / secondary-activate / context-menu 方法），并在 `containments/taskpanel` 里加了一行来画它；
+- [`tools/deploy-liuqin-taskpanel.py`](tools/deploy-liuqin-taskpanel.py) 在平板上构建这一个 containment 并安装，然后重启 `plasma-plasmashell.service`。挂件的 QML 是以 KPackage 形式安装的，因为发行包里的插件把 QML 编译进了 `.so`，没法逐文件替换；
+- `--uninstall` 把发行包的任务面板装回去；
+- 在平板上构建需要 `build-essential cmake extra-cmake-modules qt6-base-dev qt6-declarative-dev qt6-sensors-dev libplasma-dev libkf6config-dev libkf6coreaddons-dev libkf6windowsystem-dev`（完整的 plasma-mobile 构建还要 KWin、KPipeWire、QCoro 的开发文件，这也是那个独立 CMake 工程存在的原因）。
+
+能做与不能做：图标会出现，点一下等于激活该条目；长按菜单和悬停提示还没接。只发布 `IconPixmap` 的条目也支持（走一个图像 provider），状态为 `Passive` 的条目会变暗。某个应用是否出现取决于它自己：Tailscale 的守护进程不发布托盘条目，所以它需要自己的界面（`tailscale web --listen 127.0.0.1:5252`，或在别的机器上 `ssh -L 5252:127.0.0.1:5252`）。
+
 ## 使用与维护
 
 Ubuntu 软件包通过 APT 管理。项目内核与设备组件的更新方式将随安装版本说明，
