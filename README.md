@@ -296,10 +296,19 @@ to the task switcher, home and close buttons:
   plasma-mobile build also wants KWin, KPipeWire and QCoro development files,
   which is why the standalone CMake project exists at all).
 
-What it does and does not do: the icons appear and a tap activates the item;
-long-press context menus and tool tips are not wired up yet. Items that only
+What it does and does not do: the icons appear, a tap activates the item, and a
+right click or a long press asks it for its own context menu. Items that only
 publish `IconPixmap` are supported (they go through an image provider), and an
-item that reports `Passive` status is dimmed. Whether an application shows up
+item that reports `Passive` status is dimmed.
+
+Applications that publish their menu over `com.canonical.dbusmenu` (Ayatana
+indicators: FlClash, Telegram, most AppIndicators) ignore `Activate` and
+`ContextMenu` and expect the host to draw that menu. The model reads the menu,
+but drawing it from the bottom panel does not work in this shell: a QML popup
+anchored to the panel is clipped to the panel's own 60-pixel window (only the
+first row is visible, whatever offset it is opened at), and a plain window
+cannot be positioned on Wayland. Until the menu is rendered from the shell's
+full-screen desktop window instead, those items show no menu. Whether an application shows up
 at all is up to the application: Tailscale's daemon does not publish a tray
 item, so it needs its own GUI (`tailscale web --listen 127.0.0.1:5252`, or
 `ssh -L 5252:127.0.0.1:5252` from another machine).

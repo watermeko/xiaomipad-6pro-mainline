@@ -243,7 +243,9 @@ Plasma Mobile 没有画托盘图标的地方：应用向 `org.kde.StatusNotifier
 - `--uninstall` 把发行包的任务面板装回去；
 - 在平板上构建需要 `build-essential cmake extra-cmake-modules qt6-base-dev qt6-declarative-dev qt6-sensors-dev libplasma-dev libkf6config-dev libkf6coreaddons-dev libkf6windowsystem-dev`（完整的 plasma-mobile 构建还要 KWin、KPipeWire、QCoro 的开发文件，这也是那个独立 CMake 工程存在的原因）。
 
-能做与不能做：图标会出现，点一下等于激活该条目；长按菜单和悬停提示还没接。只发布 `IconPixmap` 的条目也支持（走一个图像 provider），状态为 `Passive` 的条目会变暗。某个应用是否出现取决于它自己：Tailscale 的守护进程不发布托盘条目，所以它需要自己的界面（`tailscale web --listen 127.0.0.1:5252`，或在别的机器上 `ssh -L 5252:127.0.0.1:5252`）。
+能做与不能做：图标会出现，点一下等于激活该条目，右键或长按会向应用要它自己的右键菜单。只发布 `IconPixmap` 的条目也支持（走一个图像 provider），状态为 `Passive` 的条目会变暗。
+
+通过 `com.canonical.dbusmenu` 发布菜单的应用（Ayatana indicator：FlClash、Telegram、大多数 AppIndicator）不响应 `Activate`/`ContextMenu`，需要 host 自己把菜单画出来。模型已经能读这份菜单，但从底部面板画不出来：锚在面板上的 QML 弹窗会被裁到面板自己那 60 像素高的窗口里（无论用什么偏移都只看得见第一行），而普通窗口在 Wayland 上又无法定位。在把菜单改到 shell 的全屏桌面窗口里渲染之前，这类条目暂时没有菜单。某个应用是否出现取决于它自己：Tailscale 的守护进程不发布托盘条目，所以它需要自己的界面（`tailscale web --listen 127.0.0.1:5252`，或在别的机器上 `ssh -L 5252:127.0.0.1:5252`）。
 
 ## 使用与维护
 
