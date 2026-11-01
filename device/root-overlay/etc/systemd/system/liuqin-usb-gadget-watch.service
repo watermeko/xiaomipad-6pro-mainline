@@ -4,11 +4,16 @@ Documentation=file:///usr/local/sbin/liuqin-usb-gadget-watch
 # The gadget itself has to exist before its UDC state means anything.
 After=liuqin-usb-gadget.service
 Requires=liuqin-usb-gadget.service
-# No ConditionPathExists on the UDC: the controller disappears from
-# /sys/class/udc while no cable supplies VBUS, and a unit that cannot start
-# then is a unit that is not running when the cable comes back -- which is
-# exactly the state a suspend on battery leaves the tablet in. The watcher
-# waits for the UDC itself and binds the gadget when it returns.
+# Off by default, and deliberately so.  The watcher rebuilds the gadget by
+# tearing down configfs and creating it again, and when a host is attached the
+# rebuild races the role switch: the log of one incident ends with
+# FUNCTIONFS_SUSPEND, "Set phy mode to usb host" and the xHCI host controller
+# probing on the same port that still has a cable in it, and the tablet
+# rebooted.  Another left it frozen until a power-key reset.  Until the rebuild
+# is gated on "no partner on the port", this is an opt-in recovery tool:
+#
+#   touch /etc/liuqin-usb-gadget-watch-enabled && systemctl start liuqin-usb-gadget-watch
+ConditionPathExists=/etc/liuqin-usb-gadget-watch-enabled
 
 [Service]
 Type=simple

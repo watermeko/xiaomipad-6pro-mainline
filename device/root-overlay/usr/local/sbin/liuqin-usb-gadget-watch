@@ -38,6 +38,7 @@ adbd_is_offline() {
 
 rebuild() {
 	log "rebuilding the gadget: $*"
+	last_rebuild=$(date +%s)
 	if ! systemctl restart "$GADGET_UNIT"; then
 		log "gadget rebuild failed; will try again on the next transition"
 		return 1
@@ -53,6 +54,13 @@ was_up=0
 offline_streak=0
 tick=0
 udc_present=0
+last_rebuild=0
+# A rebuilt gadget needs the host to enumerate it again, and adbd logs "offline"
+# while it waits.  Without a grace period the journal fallback below reads that
+# log line as "still broken" and rebuilds again every minute, which re-enumerates
+# the device forever and breaks any adb session that was working.  The UDC
+# returning is a real topology change and is not gated by this.
+REBUILD_GRACE=300
 
 while sleep 3; do
 	if [ ! -e "$UDC/state" ]; then
@@ -99,7 +107,12 @@ while sleep 3; do
 			if adbd_is_offline; then
 				offline_streak=$((offline_streak + 1))
 				if [ "$offline_streak" -ge 2 ]; then
-					rebuild "adbd reports the transport offline while the link is up" || true
+					age=$(( $(date +%s) - last_rebuild ))
+					if [ "$last_rebuild" = 0 ] || [ "$age" -ge "$REBUILD_GRACE" ]; then
+						rebuild "adbd reports the transport offline while the link is up" || true
+					else
+						log "adbd still reports offline ${age}s after a rebuild; waiting for the host"
+					fi
 					offline_streak=0
 				fi
 			else

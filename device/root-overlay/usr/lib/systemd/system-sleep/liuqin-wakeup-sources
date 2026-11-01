@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Re-apply the wakeup-source policy before every sleep.
+#
+# The driver-level wakeup flags survive a suspend, but a re-probe of the PMIC
+# GLINK supplies arms qcom-battmgr-bat again, and then the battery manager's
+# poll wakes the AP every few minutes: on 2026-11-01 the same tablet that slept
+# 476-604 s with the poll disarmed spent twelve hours of the day waking every
+# 5-50 s with it armed, which is what the short sleeps in the log were.
+#
+# A unit ordered Before=sleep.target does not cover this on its own -- with
+# RemainAfterExit=yes it runs once at boot, and systemd-sleep's
+# replace-irreversibly start of sleep.target did not pull it in again (the unit
+# stayed on its boot-time start through a dozen sleeps).  systemd-sleep runs
+# every executable in this directory with `pre` and `post` around each sleep,
+# which is exactly the hook this needs.
+case "${1:-}" in
+pre|post) exec /usr/local/sbin/liuqin-wakeup-sources ;;
+esac
+exit 0

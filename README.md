@@ -28,7 +28,7 @@ This project is only for the **Xiaomi Pad 6 Pro (liuqin, SM8475)**. Other Xiaomi
 
 - **Data loss**: unlocking the bootloader and performing an initial installation erase user data. Back up your files first.
 - **Storage and layout**: installation has been tested on one known **256 GB partition layout**, not every 256 GB device. Other capacities and modified partition layouts are unverified and unsupported. The installer repartitions the tail of the disk. In the dual-boot layout both systems boot from slot A; the Linux-only layout places Ubuntu in slot B. Do not bypass the checks.
-- **Validation scope**: installation and initial setup, rotation, touch, the magnetic keyboard (including its touchpad), speakers, single-microphone recording, USB OTG host mode (wired mouse), native fingerprint login and DP output have device-test evidence. See the table below for each feature's scope; not every combination is retested with every release. Android recovery still requires separate device validation.
+- **Validation scope**: installation and initial setup, rotation, touch, the magnetic keyboard (including its touchpad), speakers, single-microphone recording, USB OTG host mode (wired mouse), native fingerprint login, DP output and suspend to deep sleep have device-test evidence. See the table below for each feature's scope; not every combination is retested with every release. Android recovery still requires separate device validation.
 - **Installation layout**: the installer offers a Linux-only layout and a dual-boot layout that keeps stock Android. Both systems use slot A and switching writes the other system's image into `boot_a`. The known 256 GB unit has passed slot-A Ubuntu startup, Android's first boot after restoring stock firmware, and a return to Ubuntu through the KernelSU module script under a debug Android boot. The Manager WebUI button, automatic KernelSU activation under an ordinary Android boot, and the Linux-only layout remain unverified. See the [installation steps](docs/INSTALL-TESTING.md).
 - **Recovery preparation**: obtain the matching stock firmware and read the [data and recovery instructions](docs/FLASHING.md#data-and-recovery) before installing.
 - **Hardware limitations**: some features are incomplete. Review the hardware support table below.
@@ -46,6 +46,7 @@ Use a complete installation bundle from [GitHub Releases](https://github.com/yzd
 | Build the kernel and device components | [Build guide](docs/BUILD.md) |
 | Restore Android | [Data and recovery instructions](docs/FLASHING.md#data-and-recovery) |
 | Reclaim memory (zram, package trim) | [Memory tweaks](#memory-tweaks), then [Memory notes](docs/MEMORY.md) |
+| Make the tablet sleep (and wake it) | [Suspend and resume](docs/SUSPEND.md) |
 
 Prebuilt installation bundles include matching boot and root filesystem images, installation tools and checksums.
 
@@ -63,6 +64,7 @@ Verified features at a glance; see the table below for the scope of each:
 - ✅ Magnetic keyboard and touchpad · ✅ Native fingerprint login · ✅ Auto-rotation · ✅ Power and volume keys
 - ✅ Wi-Fi · ✅ Bluetooth · ✅ USB data transfer · ✅ USB OTG (wired mouse) · ✅ DP output (tested combination)
 - ✅ Four speakers · ✅ Single-microphone recording · ✅ H.264 hardware decoding (userspace) · ✅ Rear-camera preview (experimental) · ✅ Battery reporting and basic charging
+- 🟡 Suspend to deep sleep (enters, resumes, one wake in three unexplained) · 🟡 Cover-close sleep (configured, not exercised)
 
 ### Platform, Display and Input
 
@@ -77,7 +79,7 @@ Verified features at a glance; see the table below for the scope of each:
 | Magnetic keyboard | Nanosic WN8030 | ✅ Working | Character and volume keys, touchpad, reattachment; suspend recovery not fully covered |
 | Fingerprint | FPC1264 / libfprint TOD / fprintd | ✅ Working | Native Settings enrollment, same-finger acceptance/other-finger rejection, lock-screen unlock and fingerprint login after ordinary reboot; currently limited to the first account (UID 1000) and one finger, see [fingerprint guide](docs/FINGERPRINT.md) |
 | Stylus | NVTCapacitivePen input interface | 🧪 Unverified | Coordinates, pressure, buttons and input after wake not tested |
-| Hall switches | GPIO / SW_LID / SW_TABLET_MODE | 🟡 Partial | Switch states are readable; cover-close and open-to-wake policies not fully validated |
+| Hall switches | GPIO / SW_LID / SW_TABLET_MODE | 🟡 Partial | Switch states are readable and the lid switch is a wakeup source, so opening the cover wakes the tablet; the desktop's lid action (PowerDevil `LidAction=Sleep`) is configured but could not be exercised without the folio cover |
 
 ### Wireless and USB
 
@@ -119,7 +121,7 @@ Verified features at a glance; see the table below for the scope of each:
 | Computer USB power | USB power path | 🟡 Partial | Limited supply power; heavy workloads may still discharge the battery |
 | Xiaomi proprietary fast charging | Vendor charging protocol | 🟡 Partial | Charger authentication integrated; battery authentication verified and PD adapters reach 9 V / 2 A. MiPPS and standard PPS fast charging await adapter validation |
 | Charging while powered off | Boot-stage charging hold | 🟡 Partial | No complete charging display; use a long power-key press to boot while charging |
-| Suspend / resume | Linux power management | 🟡 Partial | Basic resume verified; peripheral recovery and deep-sleep power need further testing |
+| Suspend / resume | PSCI deep sleep / PowerDevil | 🟡 Partial | `deep` is the selected sleep state: a suspend offlines every non-boot CPU and hands the SoC to the firmware, and the resume brings touch, pen, keyboard, touchpad, Wi-Fi and the panel back. `liuqin-sleep-guard` puts an unattended wake back to sleep, so the tablet keeps returning to sleep instead of staying awake after the first one. Measured on battery: **102 mA (1.36 %/h)** with the shipped policy against **216 mA (2.88 %/h)** awake with the panel dark. Partial because the platform still stops at the APSS sleep level -- `cxsd`, `ddr` and `aosd` stay at zero after every suspend, and the five Linux-side causes that could explain it (every subsystem stopped, the USB PHY, the AOP prevent votes, the SMP2P sleep state bit and the CX sleep-set vote) have all been eliminated by measurement, so a real deep sleep needs firmware work. About one suspend in three also ends early with no interrupt attributed. See [Suspend and resume](docs/SUSPEND.md) |
 | RTC / offline time retention | Qualcomm PMK8350 RTC | 🧪 Unverified | Network time synchronization works; offline writes and power-loss retention are not guaranteed |
 
 ## Memory Tweaks
@@ -223,6 +225,50 @@ sudo rm /etc/systemd/zram-generator.conf                              # drop zra
 
 The kernel side is not runtime-reversible: it needs a rebuild and a boot image
 flash, or the `boot_a` copy under `backups/liuqin-boot/`.
+
+## Suspend and Sleep
+
+Through v0.6.0 the tablet never slept: PowerDevil was pinned to
+`AutoSuspendIdleTimeoutSec=0` because resume had not been proven on this board,
+so an idle tablet blanked the panel and left the SoC and the Wi-Fi radio
+running. The sleep path is now verified, and this repository ships defaults that
+use it:
+
+| Piece | What it does |
+|---|---|
+| `device/configs/liuqin-*.config` in the kernel lock | keep `CONFIG_SUSPEND`, PSCI system suspend and the debugfs suspend counters |
+| `device/root-overlay/etc/xdg/powerdevilrc` | `AutoSuspendAction=1` with a 5 min idle timeout on battery and 15 min on the charger, and `LidAction=1` for the folio cover |
+| `device/root-overlay/etc/systemd/logind.conf.d/90-liuqin.conf` | `HandleLidSwitch=suspend` as the fallback before a session exists |
+
+`/sys/power/mem_sleep` selects `deep`, so a suspend goes through
+`psci_system_suspend` and the SoC is handed to the firmware. The RTC alarm,
+the power key and both hall switches are wakeup sources from the device tree, so
+waking does not depend on the session still listening. A power-key short press
+still blanks and locks by default; `gsettings set io.github.liuqin.power
+short-press-action suspend` makes the key sleep the tablet instead.
+
+**What is not proven yet**: about one suspend in three ends early with every
+wakeup-source counter at zero and no wakeup IRQ attributed at all (the resume
+comes from the firmware, below Linux), the folio cover's lid action never ran on
+the real switch (a virtual `SW_LID` device does not reach the source PowerDevil
+watches), and suspend with an external display attached is untested.  The
+sleeping cost itself is measured: 121 mA (1.6 %/h) against 227 mA awake, over a
+2.5 hour window -- and the firmware's own counters say why it is not lower.
+`docs/SUSPEND.md` has the numbers, the wake-source table and the gaps;
+`tests/suspend-resume.py` is the check that has to keep passing.
+
+On an installed tablet the defaults above only take effect if the boot
+contract is rebound to the new file: `/etc/xdg/powerdevilrc` is one of the
+files the ramdisk's admission contract pins, so copying it onto a running
+tablet makes the next boot stop in the initramfs diagnostics shell.  A root
+image build does that for you; `docs/SUSPEND.md` explains the manual route.
+
+Reverting to the old behaviour is one key and a reload:
+
+```sh
+sudo sed -i 's/^AutoSuspendIdleTimeoutSec=.*/AutoSuspendIdleTimeoutSec=0/' /etc/xdg/powerdevilrc
+systemctl --user restart plasma-powerdevil
+```
 
 ## Usage and Maintenance
 

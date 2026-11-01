@@ -1,0 +1,19 @@
+[Unit]
+Description=Armed wakeup sources for liuqin
+Documentation=file:///usr/local/sbin/liuqin-wakeup-sources
+# Runs before anything can suspend, and re-applies the policy after a resume:
+# the driver-level wakeup flags survive a suspend, but a re-probe of the
+# PMIC GLINK supplies does not, and a sleep that quietly starts waking on
+# battery-manager polls again would not show up anywhere else.
+After=pmic-glink.target
+Before=sleep.target
+Wants=pmic-glink.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/liuqin-wakeup-sources
+ExecReload=/usr/local/sbin/liuqin-wakeup-sources
+
+[Install]
+WantedBy=multi-user.target

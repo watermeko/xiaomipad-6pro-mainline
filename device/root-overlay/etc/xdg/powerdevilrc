@@ -1,19 +1,35 @@
 # System-wide PowerDevil defaults for liuqin (Plasma Mobile).
 #
-# The display blanks after five minutes and never suspends.  Five minutes is
-# the same idle policy the GNOME build shipped (dconf idle-delay=300): "never
-# blank" was only ever a bring-up default, and on battery it is the most
-# expensive default the desktop has.  Suspend stays off because resume has not
-# been proven on this board yet; raise AutoSuspendIdleTimeoutSec in the same
-# change that proves it, not before.
+# The display blanks after five minutes and the tablet then sleeps: five
+# minutes on battery, fifteen on the charger.  Both numbers are PowerDevil's
+# own mobile defaults (powerdevilsettingsdefaults.cpp, defaultAutoSuspend*
+# with isMobile=1); they are written out here because this file used to pin
+# AutoSuspendIdleTimeoutSec=0 -- resume was never proven on this board, and a
+# desktop that only blanks the panel leaves the SoC and the Wi-Fi radio
+# running for as long as the tablet sits in a bag.
 #
-# PowerButtonAction=0 (Do nothing) is load-bearing: liuqin-power-keyd owns
+# tools/deploy-liuqin-boot.py's kernel and tests/suspend-resume.py's cycle and
+# drain modes are the evidence that this default is allowed to be nonzero:
+# the platform enters PSCI deep sleep, the non-boot CPUs are offlined, the
+# RTC alarm wakes it, and the measured drain while asleep is in
+# docs/SUSPEND.md.  If a future kernel stops resuming, put the timeout back to
+# 0 in the same change that finds it, not after.
+#
+# LidAction=1 (Sleep): closing the folio cover is this tablet's lid.  The
+# kernel reports it as SW_LID and marks the hall GPIO a wakeup source, so the
+# same magnet that puts the tablet to sleep also opens it again.
+# InhibitLidActionWhenExternalMonitorPresent keeps PowerDevil's default of
+# true: with a monitor in the USB-C port the tablet keeps running, which is
+# the behaviour a desk setup needs.
+#
+# PowerButtonAction=0 (NoAction) is load-bearing: liuqin-power-keyd owns
 # KEY_POWER so that a short press can blank/lock and a long press can open the
 # chooser.  The daemon deliberately does not grab the device (the same key has
 # to wake a blanked panel), so the desktop still sees the key.  PowerDevil must
-# not act on it a second time.  Enum order in PowerDevil: 0 Do nothing,
-# 1 Sleep, 2 Hibernate, 3 Shut down, 4 Lock screen, 5 Show logout screen,
-# 6 Turn off screen.
+# not act on it a second time.  The enum is a flag enum in Plasma 6
+# (powerdevilenums.h, PowerDevil::PowerButtonAction): NoAction=0, Sleep=1,
+# Hibernate=2, Shutdown=8, PromptLogoutDialog=16, LockScreen=32,
+# TurnOffScreen=64, ToggleScreenOnOff=128 -- not 0..6 in steps of one.
 [General]
 PowerButtonAction=0
 
@@ -23,7 +39,9 @@ TurnOffDisplayIdleTimeoutSec=300
 TurnOffDisplayWhenIdle=true
 
 [AC][SuspendAndShutdown]
-AutoSuspendIdleTimeoutSec=0
+AutoSuspendAction=1
+AutoSuspendIdleTimeoutSec=900
+LidAction=1
 
 [Battery][Display]
 DimDisplayIdleTimeoutSec=240
@@ -31,7 +49,9 @@ TurnOffDisplayIdleTimeoutSec=300
 TurnOffDisplayWhenIdle=true
 
 [Battery][SuspendAndShutdown]
-AutoSuspendIdleTimeoutSec=0
+AutoSuspendAction=1
+AutoSuspendIdleTimeoutSec=300
+LidAction=1
 
 [LowBattery][Display]
 DimDisplayIdleTimeoutSec=240
@@ -39,4 +59,6 @@ TurnOffDisplayIdleTimeoutSec=300
 TurnOffDisplayWhenIdle=true
 
 [LowBattery][SuspendAndShutdown]
-AutoSuspendIdleTimeoutSec=0
+AutoSuspendAction=1
+AutoSuspendIdleTimeoutSec=300
+LidAction=1

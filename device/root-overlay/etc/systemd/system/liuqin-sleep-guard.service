@@ -1,0 +1,23 @@
+[Unit]
+Description=Resume a sleep that nobody interrupted
+Documentation=file:///usr/local/sbin/liuqin-sleep-guard
+# No After=graphical.target here: ordering a unit that multi-user.target wants
+# after graphical.target closes an ordering cycle through
+# power-profiles-daemon, and systemd then deletes the start job -- which is how
+# the guard silently did nothing on the boot of 2026-11-01.  The script waits
+# for the compositor itself (`session_up`), which is the same condition without
+# the cycle.
+After=liuqin-power-keyd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/liuqin-sleep-guard
+# A guard that dies leaves the tablet awake after the first unattended resume,
+# which is the failure it exists to prevent, so restart it.
+Restart=always
+RestartSec=15
+# The loop reads a sysfs attribute and calls systemctl; nothing else.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

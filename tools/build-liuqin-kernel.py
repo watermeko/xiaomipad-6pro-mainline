@@ -43,8 +43,25 @@ def main():
         parser.error('--out must be outside the kernel source tree')
     if output('git', '-C', str(source), 'rev-parse', 'HEAD') != lock['commit']:
         parser.error('kernel source does not match kernel/source.json')
-    if output('git', '-C', str(source), 'status', '--porcelain', '--untracked-files=normal'):
-        parser.error('kernel source must be clean')
+    # Patches the product carries until they are upstream.  They apply to the
+    # pinned commit, in name order, and the tree is allowed to be dirty only by
+    # exactly them: anything else means somebody edited the source by hand.
+    patches = sorted((project / 'kernel/patches').glob('*.patch'))
+
+    def applied(patch):
+        return subprocess.run(['git', '-C', str(source), 'apply', '--reverse', '--check', str(patch)],
+                              capture_output=True).returncode == 0
+
+    dirty = output('git', '-C', str(source), 'status', '--porcelain', '--untracked-files=normal')
+    if dirty and not (patches and all(applied(patch) for patch in patches)):
+        parser.error('kernel source must be clean, or carry exactly kernel/patches/*')
+    for patch in patches:
+        if applied(patch):
+            continue
+        subprocess.run(['git', '-C', str(source), 'apply', '--check', str(patch)], check=True)
+        subprocess.run(['git', '-C', str(source), 'apply', str(patch)], check=True)
+        print(f'applied {patch.name}')
+    source_state = output('git', '-C', str(source), 'status', '--porcelain', '--untracked-files=normal')
     cross = os.environ.get('CROSS_COMPILE', 'aarch64-linux-gnu-')
     compiler = shutil.which(cross + 'gcc')
     if not compiler:
@@ -58,6 +75,7 @@ def main():
         'upstream_base': lock['upstream_base'],
         'config_sha256': lock['config_sha256'],
         'fragments': {str(p.relative_to(project)): digest(p) for p in fragments},
+        'patches': {p.name: digest(p) for p in patches},
         'compiler': str(Path(compiler).resolve()), 'compiler_sha256': digest(compiler),
         'compiler_version': output(compiler, '--version'),
         'builder_sha256': digest(__file__),
@@ -106,14 +124,14 @@ def main():
         subprocess.run(make + ['modules_install', 'INSTALL_MOD_PATH=' + str(out / 'modules')],
                        env=env, check=True)
         if output('git', '-C', str(source), 'rev-parse', 'HEAD') != lock['commit'] or output(
-                'git', '-C', str(source), 'status', '--porcelain', '--untracked-files=normal'):
+                'git', '-C', str(source), 'status', '--porcelain', '--untracked-files=normal') != source_state:
             identity['invalidated'] = 'source changed during build'
             stamp.write_text(json.dumps(identity, indent=2) + '\n')
             parser.error('source changed during build; discard this output')
         paths = ['arch/arm64/boot/Image', 'arch/arm64/boot/dts/' + lock['dtb'],
                  '.config', 'vmlinux', 'System.map']
         public_info = {key: identity[key] for key in
-                       ('commit', 'config_sha256', 'fragments', 'compiler_sha256',
+                       ('commit', 'config_sha256', 'fragments', 'patches', 'compiler_sha256',
                         'compiler_version', 'builder_sha256')}
         public_info.update(product_kernel_commit=pinned_commit,
                            build_kind='development' if args.revision else 'product-input')

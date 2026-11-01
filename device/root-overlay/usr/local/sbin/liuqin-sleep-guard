@@ -1,0 +1,259 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Put an unattended wake back to sleep.
+#
+# PowerDevil suspends when the idle time crosses its timeout, and an idle
+# timeout crosses once: the idle time has to fall back below the timeout --
+# which takes input from a human -- before it can cross a second time.  A
+# resume that nobody asked for never produces that input, so the tablet stays
+# awake at the awake-idle draw until somebody touches it.  Measured on
+# 2026-11-01: the suspend requested at 02:18:43 woke by itself at 02:18:54 and
+# the tablet was still awake eight minutes later with
+# AutoSuspendIdleTimeoutSec=60; restarting powerdevil re-armed the timer, so the
+# timeout itself is fine and what is missing is a second crossing.  In the field
+# that means the first automatic sleep after a login is the only one.
+#
+# Every resume also brings the lock screen back with the panel lit, and it stays
+# lit until powerdevil's display timeout blanks it again -- about five minutes
+# per unattended wake.  A re-suspend loop that just sleeps the tablet again
+# would pay that five minutes plus a Wi-Fi reassociation every cycle, so this
+# guard blanks the panel first (`liuqin-power-key-action short`, the same path
+# the power key uses) and only then considers sleeping.
+#
+# Sleep is not worth a resume.  This firmware wakes the tablet on its own every
+# few tens of seconds on the charger, and re-suspending into that is a treadmill
+# -- a naive loop ran 26 suspends in 24 minutes with 5-48 s of sleep each, and
+# the tablet was unreachable over Wi-Fi for minutes at a time because the
+# reassociation never finished.  So a sleep shorter than `min_sleep` is not
+# worth another resume: the tablet stays awake with the panel dark for `backoff`
+# seconds instead, and a request the kernel refused is retried after `retry`.
+#
+# `systemctl suspend` returns as soon as logind has queued the job (37 ms here,
+# measured) while the tablet sleeps afterwards, so the guard times the sleep
+# from the suspend_stats increment in RTC seconds rather than from the command.
+#
+# "Touched" is read from the interrupt counters of the input devices -- the
+# power key, the touchscreen, the pen, the fingerprint reader, the folio
+# keyboard, the tablet's own buttons, and the USB port (an external keyboard or
+# mouse in a dock has no other counter it shows up in) -- because that is the
+# only signal that
+# looks the same for a deliberate wake and for one the firmware did on its own:
+# a power-key wake bumps pmic_pwrkey before this loop looks, so a human gets the
+# grace period again on every touch, while a firmware wake leaves the counters
+# alone.
+#
+# Scope: one repeat of a sleep the policy already asked for, never the first
+# one.  The guard only acts once this boot has suspended at least once
+# (suspend_stats), so booting up cannot be delayed, and never before the
+# compositor is up.
+set -u
+
+interval=${LIUQIN_SLEEP_GUARD_INTERVAL:-5}
+grace=${LIUQIN_SLEEP_GUARD_GRACE:-15}
+# A sleep shorter than this bought nothing worth another resume.  Measured
+# 2026-11-01 06:24-06:44: this firmware cut every sleep to 5-40 s and attributed
+# none of the wakes to an interrupt, so the bar is low on purpose -- chaining a
+# 6 s sleep still beats leaving the tablet awake for two minutes.
+min_sleep=${LIUQIN_SLEEP_GUARD_MIN_SLEEP:-5}
+# How long to leave the tablet awake (panel dark) after a sleep that short.
+backoff=${LIUQIN_SLEEP_GUARD_BACKOFF:-60}
+# A suspend the kernel refused outright is worth retrying sooner than that.
+retry=${LIUQIN_SLEEP_GUARD_RETRY:-20}
+# After an unattended wake the WLAN has to reassociate, and a sleep that lands
+# before it does leaves the tablet off the network until something wakes it
+# again -- on 2026-11-01 that turned into forty minutes with no way in over SSH
+# or adb, because every cycle slept before the link came back.  So the guard
+# waits for the link rather than for a timer: it keeps the tablet awake (panel
+# dark) until the WLAN is associated, and only falls back to sleeping after
+# `link_wait` seconds so that a tablet with no network still sleeps.
+link_wait=${LIUQIN_SLEEP_GUARD_LINK_WAIT:-300}
+# A link that does not come back on its own is usually NetworkManager's idea of
+# the interface having gone stale; one restart per resume, after this long,
+# is what has brought it back every time.
+link_retry=${LIUQIN_SLEEP_GUARD_LINK_RETRY:-60}
+networkmanager=${LIUQIN_SLEEP_GUARD_NETWORKMANAGER:-/usr/bin/systemctl}
+wlan=${LIUQIN_SLEEP_GUARD_WLAN:-wlp1s0}
+systemctl=${LIUQIN_SYSTEMCTL:-/usr/bin/systemctl}
+loginctl=${LIUQIN_LOGINCTL:-/usr/bin/loginctl}
+blank=${LIUQIN_SLEEP_GUARD_BLANK:-/usr/local/libexec/liuqin-power-key-action}
+connectors=${LIUQIN_SLEEP_GUARD_PANEL:-/sys/class/drm/card*-DSI-*}
+stats=${LIUQIN_SLEEP_GUARD_STATS:-/sys/power/suspend_stats}
+rtc=${LIUQIN_SLEEP_GUARD_RTC:-/sys/class/rtc/rtc0/since_epoch}
+interrupts=${LIUQIN_SLEEP_GUARD_INTERRUPTS:-/proc/interrupts}
+# Whoever is suspending on its own schedule -- tests/suspend-resume.py, a
+# measurement run -- puts this file down so the guard does not race it into a
+# second suspend while it is still reading the counters back.
+hold=${LIUQIN_SLEEP_GUARD_HOLD:-/run/liuqin-sleep-guard-hold}
+input_irqs=${LIUQIN_SLEEP_GUARD_INPUT_IRQS:-NVT-ts|nanosic-data|pmic_pwrkey|fpc1020|4-004c:wakeup|Lid|Mode|Up}
+# An external keyboard or mouse in a dock shows up nowhere in the list above, so
+# the USB port's own interrupt counts as well -- but only in bursts: with a host
+# on the other end of the cable the gadget keeps the port busy about once every
+# ten seconds, and counting that as input would stop the tablet from sleeping
+# whenever it is plugged into a computer.
+usb_irq=${LIUQIN_SLEEP_GUARD_USB_IRQ:-dwc3}
+usb_burst=${LIUQIN_SLEEP_GUARD_USB_BURST:-20}
+
+log() {
+	printf 'liuqin-sleep-guard: %s\n' "$*"
+}
+
+now() {
+	date +%s
+}
+
+counter() {
+	cat "$1" 2>/dev/null || echo 0
+}
+
+# One number that only moves when an input device reports something.
+input_counter() {
+	awk -v names="^($input_irqs)\$" '$NF ~ names { total += $2 } END { print total + 0 }' \
+		"$interrupts" 2>/dev/null || echo 0
+}
+
+usb_counter() {
+	awk -v name="$usb_irq" '$NF == name { print $2; found = 1 } END { if (!found) print 0 }' \
+		"$interrupts" 2>/dev/null || echo 0
+}
+
+wlan_up() {
+	# No WLAN interface at all is not a reason to stay awake.
+	[ -e "/sys/class/net/$wlan" ] || return 0
+	[ "$(cat "/sys/class/net/$wlan/operstate" 2>/dev/null)" = up ]
+}
+
+session_up() {
+	[ -n "$(pgrep -x kwin_wayland 2>/dev/null || :)" ]
+}
+
+session_locked() {
+	session=$("$loginctl" show-seat seat0 --property=ActiveSession --value 2>/dev/null || :)
+	case $session in ''|n/a) return 1 ;; esac
+	[ "$("$loginctl" show-session "$session" --property=LockedHint --value 2>/dev/null || :)" = yes ]
+}
+
+# Every internal panel connector has to report Off, and there has to be one:
+# without a connector this cannot tell a blanked tablet from a busy one.
+panel_off() {
+	found=0
+	for connector in $connectors; do
+		[ -r "$connector/dpms" ] || continue
+		found=1
+		[ "$(cat "$connector/dpms" 2>/dev/null)" = Off ] || return 1
+	done
+	[ "$found" = 1 ]
+}
+
+# liuqin-power-key-action keeps its own memory of the panel (`display-state`)
+# and toggles against it, while a resume turns the panel back on behind its
+# back.  So the first call after a resume can be a no-op that only brings the
+# memory back in line, and the panel is dark after the second one.  Two calls,
+# then give up and let the loop try again.
+blank_panel() {
+	attempt=0
+	while [ "$attempt" -lt 2 ]; do
+		"$blank" short >/dev/null 2>&1 || :
+		attempt=$((attempt + 1))
+		panel_off && return 0
+		sleep 1
+	done
+	return 1
+}
+
+# Suspend and report how long the tablet really slept.
+sleep_once() {
+	success=$(counter "$stats/success")
+	began=$(counter "$rtc")
+	wlan_up && link_was_up=1 || link_was_up=0
+	"$systemctl" suspend || log "the suspend did not go through"
+	waited=0
+	while [ "$(counter "$stats/success")" = "$success" ]; do
+		[ "$waited" -lt 40 ] || return 0
+		sleep 2
+		waited=$((waited + 2))
+	done
+	last_sleep=$(( $(counter "$rtc") - began ))
+	# CONFIG_PM_DEBUG names the interrupt that ended the sleep, or is empty when
+	# the firmware resumed the AP without one; both answers are worth a line,
+	# because "which wake cut this sleep short" is the open question here.
+	log "woke after ${last_sleep}s, wake irq $(cat /sys/power/pm_wakeup_irq 2>/dev/null || echo none)"
+	last_seen=$(now)
+	last_input=$(input_counter)
+	last_usb=$(usb_counter)
+	last_resume=$(now)
+	link_restarted=$(now)
+}
+
+last_input=$(input_counter)
+last_usb=$(usb_counter)
+last_seen=$(now)
+last_resume=$(now)
+link_restarted=$(now)
+link_was_up=1
+# Nothing is known about the sleep before this loop started, so assume it was
+# worth having rather than leaving the tablet awake after the first wake.
+last_sleep=$min_sleep
+
+while :; do
+	sleep "$interval"
+	current=$(input_counter)
+	usb=$(usb_counter)
+	burst=0
+	[ "$usb" -ge "$((last_usb + usb_burst))" ] && burst=1
+	last_usb=$usb
+	if [ "$current" != "$last_input" ] || [ "$burst" = 1 ]; then
+		last_input=$current
+		last_seen=$(now)
+		continue
+	fi
+	[ $(( $(now) - last_seen )) -ge "$grace" ] || continue
+	[ ! -e "$hold" ] || continue
+	# Never the first sleep of a boot, and never before the compositor is up.
+	[ "$(counter "$stats/success")" -gt 0 ] 2>/dev/null || continue
+	session_up || continue
+
+	# The lock screen keeps the panel lit after an unattended resume.  Blank it
+	# through the compositor so KWin's own idea of the DPMS state stays true,
+	# and look again on the next pass instead of sleeping with a lit screen.
+	if session_locked && ! panel_off; then
+		log "the lock screen is up with the panel on; blanking it"
+		blank_panel || log "the panel did not blank"
+		continue
+	fi
+	panel_off || continue
+
+	# Let the WLAN come back first: a sleep that lands mid-association leaves the
+	# tablet off the network, and nothing on it notices.  If it does not come
+	# back by itself, restart NetworkManager once and keep waiting.  Only when
+	# the tablet was on a network before it slept: a tablet with no network
+	# (in a bag, no AP in range) has nothing to wait for and sleeps straight
+	# through instead of sitting awake for `link_wait` every cycle.
+	if ! wlan_up && [ "$link_was_up" = 1 ]; then
+		[ $(( $(now) - last_resume )) -lt "$link_wait" ] || continue
+		if [ $(( $(now) - link_restarted )) -ge "$link_retry" ] &&
+		   [ $(( $(now) - last_resume )) -ge "$link_retry" ]; then
+			log "the WLAN did not come back after the resume; restarting NetworkManager"
+			"$networkmanager" restart NetworkManager || log "NetworkManager did not restart"
+			link_restarted=$(now)
+		fi
+		continue
+	fi
+
+	if [ "$last_sleep" -lt "$min_sleep" ]; then
+		if [ "$last_sleep" -lt 5 ]; then
+			log "the suspend did not take, retrying in ${retry}s"
+			sleep "$retry"
+		else
+			log "the last sleep lasted ${last_sleep}s, staying awake ${backoff}s"
+			sleep "$backoff"
+		fi
+		last_sleep=$min_sleep
+		last_seen=$(now)
+		last_input=$(input_counter)
+		continue
+	fi
+
+	log "nothing has touched the tablet for ${grace}s and the panel is off; sleeping"
+	sleep_once
+done

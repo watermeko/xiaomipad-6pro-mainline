@@ -127,3 +127,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y bubblewrap
           sudo python3 tests/sensor-startup.py
+      - name: Sleep policy
+        run: |
+          # The sleep defaults are the difference between a tablet in a bag and
+          # a tablet running its SoC all night.  tests/suspend-resume.py
+          # --policy fails if an idle timeout drifts back to "never suspend",
+          # if the lid action is dropped, or if PowerDevil starts acting on the
+          # power key that liuqin-power-keyd owns.  The live half of the same
+          # file (--cycle, --drain) runs on the tablet.
+          python3 tests/suspend-resume.py --policy

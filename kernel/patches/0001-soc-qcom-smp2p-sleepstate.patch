@@ -1,0 +1,222 @@
+From e6f2729dfa37e40a16d1705970a218c69541bd1b Mon Sep 17 00:00:00 2001
+From: liuqin <dev@liuqin>
+Date: Sun, 1 Nov 2026 14:51:43 +0800
+Subject: [PATCH] soc: qcom: add the SMP2P sleep state driver
+
+The DSPs on these SoCs keep their power domains up while the application
+processor runs and decide to go down from one bit of a shared memory word:
+bit 12 of the SMP2P "sleepstate" entry on the SLPI edge, which downstream
+clears before the system suspends and sets again after the resume.
+
+Nothing in mainline writes that bit.  The firmware's own counters say what
+that costs on the Xiaomi Pad 6 Pro: after every suspend apss counts normally
+while adsp stays awake (count 8, 6.4 s of sleep in twelve hours),
+adsp_island never increments, and cxsd, ddr and aosd are all zero -- CX and
+DDR never collapse, so a suspended tablet draws 121 mA instead of the tens
+of milliamps it should.
+
+The two entries the driver needs ("sleepstate" out, "sleepstate_see" in)
+already exist in the firmware's SMEM item for the SLPI edge, so the node only
+has to name them.
+---
+ arch/arm64/boot/dts/qcom/sm8450.dtsi |  24 ++++++
+ drivers/soc/qcom/Kconfig             |   9 +++
+ drivers/soc/qcom/Makefile            |   1 +
+ drivers/soc/qcom/smp2p_sleepstate.c  | 117 +++++++++++++++++++++++++++
+ 4 files changed, 151 insertions(+)
+ create mode 100644 drivers/soc/qcom/smp2p_sleepstate.c
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8450.dtsi b/arch/arm64/boot/dts/qcom/sm8450.dtsi
+index 91605dec16b0..66ae4293149f 100644
+--- a/arch/arm64/boot/dts/qcom/sm8450.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8450.dtsi
+@@ -923,6 +923,30 @@ smp2p_slpi_in: slave-kernel {
+ 			interrupt-controller;
+ 			#interrupt-cells = <2>;
+ 		};
++
++		/*
++		 * Bit 12 of this entry is the AP's "awake" bit: the DSPs read it
++		 * to decide whether they may enter their own low power states.
++		 * The inbound half is how a remote processor asks for a wakeup.
++		 */
++		smp2p_slpi_sleepstate_out: sleepstate {
++			qcom,entry-name = "sleepstate";
++			#qcom,smem-state-cells = <1>;
++		};
++
++		smp2p_slpi_sleepstate_in: sleepstate-see {
++			qcom,entry-name = "sleepstate_see";
++			interrupt-controller;
++			#interrupt-cells = <2>;
++		};
++	};
++
++	smp2p-sleepstate {
++		compatible = "qcom,smp2p-sleepstate";
++		interrupts-extended = <&smp2p_slpi_sleepstate_in 0
++				       IRQ_TYPE_EDGE_RISING>;
++		interrupt-names = "smp2p-sleepstate-in";
++		qcom,smem-states = <&smp2p_slpi_sleepstate_out>;
+ 	};
+ 
+ 	soc: soc@0 {
+diff --git a/drivers/soc/qcom/Kconfig b/drivers/soc/qcom/Kconfig
+index 2caadbbcf830..3a630424b2df 100644
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -199,6 +199,15 @@ config QCOM_SMD_RPM
+ config QCOM_SMEM_STATE
+ 	bool
+ 
++config QCOM_SMP2P_SLEEPSTATE
++	tristate "Qualcomm SMP2P sleep state"
++	depends on QCOM_SMP2P
++	help
++	  Say yes here to tell the remote processors that the application
++	  processor is going to sleep, through the "sleepstate" entry of the
++	  SLPI SMP2P edge.  Without it the DSPs never enter their own low
++	  power states and the platform does not collapse CX and DDR.
++
+ config QCOM_SMP2P
+ 	tristate "Qualcomm Shared Memory Point to Point support"
+ 	depends on MAILBOX
+diff --git a/drivers/soc/qcom/Makefile b/drivers/soc/qcom/Makefile
+index b7f1d2a57367..a5c67ebb833b 100644
+--- a/drivers/soc/qcom/Makefile
++++ b/drivers/soc/qcom/Makefile
+@@ -27,6 +27,7 @@ obj-$(CONFIG_QCOM_SMEM) +=	smem.o
+ obj-$(CONFIG_QCOM_SMEM_STATE) += smem_state.o
+ CFLAGS_smp2p.o := -I$(src)
+ obj-$(CONFIG_QCOM_SMP2P)	+= smp2p.o
++obj-$(CONFIG_QCOM_SMP2P_SLEEPSTATE)	+= smp2p_sleepstate.o
+ obj-$(CONFIG_QCOM_SMSM)	+= smsm.o
+ obj-$(CONFIG_QCOM_SOCINFO)	+= socinfo.o
+ obj-$(CONFIG_QCOM_SPM)		+= spm.o
+diff --git a/drivers/soc/qcom/smp2p_sleepstate.c b/drivers/soc/qcom/smp2p_sleepstate.c
+new file mode 100644
+index 000000000000..a462cc9e6ffc
+--- /dev/null
++++ b/drivers/soc/qcom/smp2p_sleepstate.c
+@@ -0,0 +1,117 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
++ */
++
++/*
++ * Tell the remote processors that the application processor is going to sleep.
++ *
++ * The DSPs on these SoCs keep their own power domains up while the AP runs and
++ * decide to go down from one bit of a shared memory word: bit 12 of the SMP2P
++ * "sleepstate" entry, which downstream clears from a PM notifier before the
++ * system suspends and sets again after the resume.  Nothing in mainline writes
++ * that bit, and on the Xiaomi Pad 6 Pro the firmware's own counters say what
++ * that costs: after every suspend `apss` counts normally while `adsp` stays
++ * awake (count 8, 6.4 s of sleep in twelve hours), `adsp_island` never
++ * increments, and `cxsd`, `ddr` and `aosd` are all zero -- CX and DDR never
++ * collapse, so a suspended tablet draws 121 mA instead of the tens of
++ * milliamps it should.
++ *
++ * The entry belongs to the SLPI SMP2P edge and comes from the firmware's SMEM
++ * item, so the device tree only has to name it.
++ *
++ * Downstream also takes the inbound half of that entry ("sleepstate_see") as a
++ * wakeup source.  Not here: on this firmware it fires every few tens of
++ * seconds, and every event makes pm_wakeup_pending() true, which aborts the
++ * very suspend this driver exists to make useful ("Wakeup pending. Abort CPU
++ * freeze", measured after a minute of trying).  The bit is the part that
++ * decides whether the DSPs may sleep; a wakeup request from a DSP is not
++ * something a tablet with no DSP use cases needs.
++ */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/soc/qcom/smem_state.h>
++#include <linux/suspend.h>
++
++#define PROC_AWAKE_ID	12 /* 12th bit */
++#define AWAKE_BIT	BIT(PROC_AWAKE_ID)
++
++struct smp2p_sleepstate {
++	struct qcom_smem_state *state;
++	struct notifier_block nb;
++};
++
++static int smp2p_sleepstate_pm_notifier(struct notifier_block *nb,
++					unsigned long event, void *unused)
++{
++	struct smp2p_sleepstate *ss = container_of(nb, struct smp2p_sleepstate, nb);
++
++	switch (event) {
++	case PM_SUSPEND_PREPARE:
++		qcom_smem_state_update_bits(ss->state, AWAKE_BIT, 0);
++		break;
++	case PM_POST_SUSPEND:
++		qcom_smem_state_update_bits(ss->state, AWAKE_BIT, AWAKE_BIT);
++		break;
++	}
++
++	return NOTIFY_DONE;
++}
++
++static int smp2p_sleepstate_probe(struct platform_device *pdev)
++{
++	struct smp2p_sleepstate *ss;
++	unsigned int bit;
++	int ret;
++
++	ss = devm_kzalloc(&pdev->dev, sizeof(*ss), GFP_KERNEL);
++	if (!ss)
++		return -ENOMEM;
++
++	ss->state = devm_qcom_smem_state_get(&pdev->dev, NULL, &bit);
++	if (IS_ERR(ss->state))
++		return dev_err_probe(&pdev->dev, PTR_ERR(ss->state),
++				     "failed to get the sleepstate smem state\n");
++
++	/* The AP starts awake, and stays awake until a suspend says otherwise. */
++	qcom_smem_state_update_bits(ss->state, AWAKE_BIT, AWAKE_BIT);
++
++	ss->nb.notifier_call = smp2p_sleepstate_pm_notifier;
++	ss->nb.priority = INT_MAX;
++	ret = register_pm_notifier(&ss->nb);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret,
++				     "failed to register the pm notifier\n");
++
++	platform_set_drvdata(pdev, ss);
++
++	return 0;
++}
++
++static void smp2p_sleepstate_remove(struct platform_device *pdev)
++{
++	struct smp2p_sleepstate *ss = platform_get_drvdata(pdev);
++
++	unregister_pm_notifier(&ss->nb);
++}
++
++static const struct of_device_id smp2p_sleepstate_match[] = {
++	{ .compatible = "qcom,smp2p-sleepstate" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, smp2p_sleepstate_match);
++
++static struct platform_driver smp2p_sleepstate_driver = {
++	.probe = smp2p_sleepstate_probe,
++	.remove = smp2p_sleepstate_remove,
++	.driver = {
++		.name = "smp2p_sleepstate",
++		.of_match_table = smp2p_sleepstate_match,
++	},
++};
++module_platform_driver(smp2p_sleepstate_driver);
++
++MODULE_DESCRIPTION("SMP2P sleep state");
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+-- 
+2.43.0
+

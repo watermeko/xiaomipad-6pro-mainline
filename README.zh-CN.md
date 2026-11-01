@@ -28,7 +28,7 @@
 
 - **数据清除**：解锁 Bootloader 和首次安装会清除用户数据，请提前备份。
 - **容量与布局**：安装器已在已知的 **256 GB 分区布局**完成真机验证，并不代表所有 256 GB 设备均兼容。其他容量、改过分区的设备未验证，不支持安装。安装器会重新划分磁盘尾部：双系统布局下两个系统都从 A 槽启动，单系统布局把 Ubuntu 安装到 B 槽；不要绕过校验。
-- **验证范围**：安装与首次设置、旋转、触摸、磁吸键盘（含触摸板）、扬声器、单麦克风录音、USB OTG 主机模式（有线鼠标）、原生指纹登录与 DP 外屏已有真机验证。各功能的范围见下表，并非每次发版都重测全部组合；Android 恢复流程尚未完成独立真机验证。
+- **验证范围**：安装与首次设置、旋转、触摸、磁吸键盘（含触摸板）、扬声器、单麦克风录音、USB OTG 主机模式（有线鼠标）、原生指纹登录、DP 外屏与深度休眠已有真机验证。各功能的范围见下表，并非每次发版都重测全部组合；Android 恢复流程尚未完成独立真机验证。
 - **安装方式**：安装器提供 Ubuntu 单系统布局与保留原厂 Android 的双系统布局。双系统都从 A 槽启动，切换时把另一系统的 boot 镜像写入 `boot_a`。已知 256 GB 开发机已验证 A 槽 Ubuntu、修复原厂固件后的 Android 首次启动，以及调试 Android 下 KernelSU 模块脚本返回 Ubuntu；管理器 WebUI 按钮、普通 Android 启动下的 KernelSU 自动加载和单系统布局仍未验收。详见[安装步骤](docs/INSTALL-TESTING.zh-CN.md)。
 - **恢复准备**：安装前请准备对应的原厂固件，并阅读[数据与恢复说明](docs/FLASHING.zh-CN.md#数据与恢复)。
 - **功能限制**：部分硬件功能尚不完整，请先查看下方硬件支持表。
@@ -46,6 +46,7 @@
 | 自行编译内核和设备组件 | [构建指南](docs/BUILD.zh-CN.md) |
 | 恢复 Android | [数据与恢复说明](docs/FLASHING.zh-CN.md#数据与恢复) |
 | 精简内存（zram、裁剪软件包） | [内存调整](#内存调整)，详见[内存说明](docs/MEMORY.zh-CN.md) |
+| 让平板睡着（并唤醒它） | [挂起与唤醒](docs/SUSPEND.zh-CN.md) |
 
 预编译安装包包括匹配的启动镜像、根文件系统、安装工具与校验文件。
 
@@ -62,6 +63,7 @@
 - ✅ 磁吸键盘与触摸板 · ✅ 原生指纹登录 · ✅ 自动旋转 · ✅ 电源键与音量键
 - ✅ Wi-Fi · ✅ 蓝牙 · ✅ USB 数据传输 · ✅ USB OTG（有线鼠标）· ✅ DP 外屏（已测组合）
 - ✅ 四扬声器 · ✅ 单麦克风录音 · ✅ H.264 硬解（用户态）· ✅ 后摄预览（实验性）· ✅ 电量显示与基础充电
+- 🟡 深度休眠（能进出，约每三次有一次莫名提前唤醒）· 🟡 合盖睡眠（已配置，未实测）
 
 ### 平台、显示与输入
 
@@ -76,7 +78,7 @@
 | 磁吸键盘 | Nanosic WN8030 | ✅ 可用 | 普通按键、音量键、触摸板与重新吸附输入；挂起后恢复未完整覆盖 |
 | 指纹 | FPC1264 / libfprint TOD / fprintd | ✅ 可用 | 原生设置录入、同指通过/异指拒绝、锁屏和正常重启后指纹登录；目前限首个账号（UID 1000）、一枚指纹，见[指纹说明](docs/FINGERPRINT.zh-CN.md) |
 | 手写笔 | NVTCapacitivePen 输入接口 | 🧪 未验证 | 坐标、压感、按键及唤醒后的笔输入未实测 |
-| 霍尔开关 | GPIO / SW_LID / SW_TABLET_MODE | 🟡 部分支持 | 开关状态可读取；保护套合盖、打开唤醒的整机策略未完整验收 |
+| 霍尔开关 | GPIO / SW_LID / SW_TABLET_MODE | 🟡 部分支持 | 开关状态可读取，且合盖开关是唤醒源，所以打开保护套能唤醒平板；桌面的合盖动作（PowerDevil `LidAction=Sleep`）已配置，但没有保护套就无法实际触发验证 |
 
 ### 无线与 USB
 
@@ -118,7 +120,7 @@
 | 电脑 USB 供电 | USB 供电路径 | 🟡 部分支持 | 供电功率有限，高负载时可能仍净放电 |
 | 小米私有快充 | 厂商充电协议 | 🟡 部分支持 | 已集成充电器认证；电池认证已验证，PD 适配器可达 9 V / 2 A。MiPPS 与标准 PPS 快充尚待适配器验收 |
 | 关机充电 | 启动阶段充电保持 | 🟡 部分支持 | 无完整充电显示界面；关机充电时开机需长按电源键 |
-| 挂起 / 恢复 | Linux 电源管理 | 🟡 部分支持 | 基础恢复已验证，外设恢复和深休眠功耗仍需进一步测试 |
+| 挂起 / 唤醒 | PSCI 深度睡眠 / PowerDevil | 🟡 部分支持 | 选中的睡眠状态是 `deep`：挂起会让非引导 CPU 下线并把 SoC 交给固件，唤醒后触摸、手写笔、键盘、触控板、Wi-Fi 与屏幕都回来。`liuqin-sleep-guard` 会把无人唤醒的平板重新睡回去，所以它不会在第一次睡眠之后就一直醒着。电池上实测：随镜像发布的策略下 **102 mA（1.36 %/h）**，清醒熄屏是 **216 mA（2.88 %/h）**。标为部分支持是因为平台仍止步 APSS 睡眠层——每次挂起后 `cxsd`、`ddr`、`aosd` 都是 0，而能解释这一点的五条 Linux 侧原因（子系统全停、USB PHY、AOP prevent 投票、SMP2P sleep state 位、CX 的 sleep-set 投票）都已被实测排除，真正的深睡需要固件侧工作。另外约每三次挂起会有一次提前结束，且内核归不到任何中断上。详见[挂起与唤醒](docs/SUSPEND.zh-CN.md) |
 | RTC / 离线时间保持 | Qualcomm PMK8350 RTC | 🧪 未验证 | 联网校时可用；不保证离线写入及断电后的时间保持 |
 
 ## 内存调整
@@ -207,6 +209,30 @@ sudo rm /etc/systemd/zram-generator.conf                              # 去掉 z
 
 内核一侧无法在运行时回退：需要重编并刷 boot 镜像，或用 `backups/liuqin-boot/` 下的
 `boot_a` 副本。
+
+## 挂起与睡眠
+
+直到 v0.6.0，这台平板其实从不睡觉：PowerDevil 被固定为
+`AutoSuspendIdleTimeoutSec=0`，因为本板的唤醒还没有验证过，所以空闲时只是熄灭屏幕，SoC 和 Wi-Fi 射频照旧运行。睡眠路径现在已经验证，本仓库发布的默认值开始使用它：
+
+| 组成 | 作用 |
+|---|---|
+| 内核锁里的 `device/configs/liuqin-*.config` | 保留 `CONFIG_SUSPEND`、PSCI 系统挂起与 debugfs 的挂起计数 |
+| `device/root-overlay/etc/xdg/powerdevilrc` | `AutoSuspendAction=1`，电池下 5 分钟、充电器下 15 分钟空闲超时，以及针对翻盖保护套的 `LidAction=1` |
+| `device/root-overlay/etc/systemd/logind.conf.d/90-liuqin.conf` | `HandleLidSwitch=suspend`，作为会话出现之前的兜底 |
+
+`/sys/power/mem_sleep` 选的是 `deep`，所以挂起走 `psci_system_suspend`，SoC 交给固件。RTC 闹钟、电源键和两个霍尔开关在设备树里就是唤醒源，所以能否唤醒不取决于会话是否还在监听。电源键短按默认仍是熄屏并锁屏；想让电源键挂起，执行 `gsettings set io.github.liuqin.power short-press-action suspend`。
+
+**尚未验证的部分**：约每三次挂起有一次提前结束，既没有唤醒源计数也没有归因到任何中断（是固件层把 AP 拉起来的）；保护套的合盖动作没有在真实开关上触发过（虚拟 `SW_LID` 设备到不了 PowerDevil 监听的源）；接外接显示器时挂起未测试。睡眠功耗本身已经量出来了：2.5 小时窗口下 121 mA（1.6 %/h），清醒熄屏是 227 mA——固件自己的计数说明了它为什么不再低。数据、唤醒源表与缺口都在 `docs/SUSPEND.zh-CN.md`；`tests/suspend-resume.py` 是必须持续通过的检查。
+
+已经装好的平板要让上面的默认值生效，必须把启动契约和文件一起重新绑定：`/etc/xdg/powerdevilrc` 属于 ramdisk 准入契约锁定的文件，直接拷进去会让下一次启动停在 initramfs 诊断 shell。根镜像构建会自动完成这一步；手工做法见 `docs/SUSPEND.zh-CN.md`。
+
+回到旧行为只需要改一个键并重新加载：
+
+```sh
+sudo sed -i 's/^AutoSuspendIdleTimeoutSec=.*/AutoSuspendIdleTimeoutSec=0/' /etc/xdg/powerdevilrc
+systemctl --user restart plasma-powerdevil
+```
 
 ## 使用与维护
 

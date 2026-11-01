@@ -1,0 +1,51 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Decide which of the Qualcomm firmware notifications may wake a sleeping
+# tablet.
+#
+# The ADSP's battery manager publishes a fresh status block every few minutes,
+# and on this firmware each one wakes the AP out of deep sleep: a suspend that
+# asked for 25 minutes ended after 5 minutes 45 seconds with no user activity
+# and no cable event.  That poll cannot tell userspace anything it cannot read
+# when it is awake, so it is not worth a resume, a Wi-Fi reassociation and a
+# screen wake.  The wireless-charging supply is in the same group; this tablet
+# has no wireless charger.
+#
+# VBUS and the Type-C port stay armed: plugging a charger has to wake the
+# tablet, and so has a power role change on the port.  The power key, the hall
+# switches and the magnetic keyboard are wakeup sources in the device tree and
+# are untouched here.
+set -u
+
+GLINK=/sys/devices/platform/pmic-glink
+POWER_SUPPLY=$GLINK/pmic_glink.power-supply.0/power_supply
+
+log() { echo "liuqin-wakeup-sources: $*"; }
+
+# arg 1: sysfs device, arg 2: enabled|disabled
+set_wakeup() {
+	_path=$1
+	_state=$2
+	if [ ! -e "$_path/power/wakeup" ]; then
+		log "no wakeup attribute at $_path"
+		return 0
+	fi
+	if ! printf '%s\n' "$_state" >"$_path/power/wakeup"; then
+		log "failed to write $_state to $_path/power/wakeup"
+		return 1
+	fi
+	log "$(basename "$_path")=$_state"
+}
+
+rc=0
+for supply in qcom-battmgr-bat qcom-battmgr-wls; do
+	set_wakeup "$POWER_SUPPLY/$supply" disabled || rc=1
+done
+for supply in qcom-battmgr-usb; do
+	set_wakeup "$POWER_SUPPLY/$supply" enabled || rc=1
+done
+set_wakeup "$GLINK/pmic_glink.ucsi.0/power_supply/ucsi-source-psy-pmic_glink.ucsi.01" \
+	enabled || rc=1
+
+exit "$rc"
