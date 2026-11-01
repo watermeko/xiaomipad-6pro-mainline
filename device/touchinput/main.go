@@ -17,6 +17,7 @@ import (
 	"github.com/watermeko/mytouchinput/internal/fcitx"
 	"github.com/watermeko/mytouchinput/internal/inject"
 	"github.com/watermeko/mytouchinput/internal/layout"
+	"github.com/watermeko/mytouchinput/internal/tray"
 	"github.com/watermeko/mytouchinput/internal/ui"
 )
 
@@ -36,9 +37,9 @@ func main() {
 	)
 	flag.Parse()
 
-	// The keyboard no longer shows itself: a small button in the bottom bar
-	// toggles it.  The fcitx5 backend is still registered so fcitx5 recognises
-	// the keyboard, but its visibility events are not used.
+	// The keyboard no longer shows itself and no longer draws a button: the
+	// task panel's tray icon toggles it.  The fcitx5 backend is still registered
+	// so fcitx5 recognises the keyboard, but its visibility events are unused.
 	if conn, err := fcitx.Connect(); err == nil {
 		backend := &fcitx.Backend{
 			Visibility: make(chan bool, 1),
@@ -76,6 +77,14 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("cannot create the keyboard window: %v", err)
+	}
+
+	// The tray icon is the only way to show the keyboard, so a failure here is
+	// worth a loud message even though the process keeps running.
+	if item, err := tray.Publish("On-screen keyboard", kb.Toggle); err != nil {
+		log.Printf("tray: not publishing an icon: %v", err)
+	} else {
+		defer item.Close()
 	}
 
 	if err := kb.Run(); err != nil {

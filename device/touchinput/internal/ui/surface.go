@@ -33,16 +33,14 @@ var (
 
 // Material metrics, in logical pixels.
 const (
-	keyRadius  = 9
-	keyGap     = 5
-	keyMargin  = 6
-	toggleSide = 56
-	toggleRad  = 14
+	keyRadius = 9
+	keyGap    = 5
+	keyMargin = 6
 )
 
-// Run serves the keyboard until the process exits.  It starts collapsed: only
-// the small toggle button is drawn, the rest of the surface is transparent and
-// click-through, and tapping the button shows or hides the keys.
+// Run serves the keyboard until the process exits.  It starts hidden: the
+// surface is fully transparent and takes no input, and Toggle -- driven by the
+// tray icon -- shows or hides the keys.
 func (u *UI) Run() (err error) {
 	defer func() {
 		if err != nil {
@@ -63,6 +61,15 @@ func (u *UI) Run() (err error) {
 		if u.expireRipples() {
 			u.dirty = true
 		}
+		u.mu.Lock()
+		if u.toggleRequested {
+			u.toggleRequested = false
+			u.expanded = !u.expanded
+			u.composeDirty = true
+			u.dirty = true
+			logf("tray toggle -> expanded=%v", u.expanded)
+		}
+		u.mu.Unlock()
 		if u.dirty {
 			start := time.Now()
 			if err := u.paint(); err != nil {
@@ -327,15 +334,11 @@ func (u *UI) createBuffers() error {
 		u.pixels = append(u.pixels, pixelTarget{data: data, fd: fd})
 	}
 
-	button, err := u.compositor.CreateRegion()
+	empty, err := u.compositor.CreateRegion()
 	if err != nil {
 		return err
 	}
-	tr := u.toggleRect()
-	if err := button.Add(int32(tr.x), int32(tr.y), int32(tr.w), int32(tr.h)); err != nil {
-		return err
-	}
-	u.buttonRegion = button
+	u.emptyRegion = empty
 
 	full, err := u.compositor.CreateRegion()
 	if err != nil {
@@ -383,7 +386,6 @@ func (u *UI) paint() (err error) {
 	full := u.composeDirty || u.boxes == nil
 	if full {
 		u.boxes = u.layout()
-		u.button = u.toggleRect()
 		u.compose(u.base)
 		u.composeDirty = false
 	}
@@ -414,11 +416,11 @@ func (u *UI) paint() (err error) {
 	}
 
 	if os.Getenv("MYTOUCHINPUT_NO_REGION") != "1" {
-		// Collapsed: only the toggle button takes input, so taps fall through
-		// to whatever is underneath.
+		// Hidden: take no input at all, so taps fall through to whatever is
+		// underneath.
 		region := u.inputRegion
 		if !u.expanded {
-			region = u.buttonRegion
+			region = u.emptyRegion
 		}
 		if err := u.surface.SetInputRegion(region); err != nil {
 			return fmt.Errorf("set_input_region: %w", err)
@@ -440,13 +442,12 @@ func (u *UI) paint() (err error) {
 	return u.surface.Commit()
 }
 
-// compose draws everything that does not animate: the key grid and the toggle.
+// compose draws everything that does not animate: the key grid.
 func (u *UI) compose(img *image.RGBA) {
 	draw.Draw(img, img.Bounds(), image.Transparent, image.Point{}, draw.Src)
 	if u.expanded {
 		u.drawKeyboard(img)
 	}
-	u.drawToggle(img)
 }
 
 // rippleBoxes returns the buffer-space rectangles the live ripples touch.
@@ -502,18 +503,6 @@ func (u *UI) convertRows(img *image.RGBA, dst []byte, y0, y1, w int) {
 			out[x+3] = src[x+3]
 		}
 	}
-}
-
-// drawToggle paints the show/hide button.
-func (u *UI) drawToggle(img *image.RGBA) {
-	b := u.toggleRect()
-	bg, fg := colMod, colText
-	if u.expanded {
-		bg, fg = colActive, colOnActive
-	}
-	sc := u.scale
-	u.roundedRect(img, b.x*sc, b.y*sc, b.w*sc, b.h*sc, toggleRad*sc, bg)
-	iconKeyboard.blit(img, (b.x+b.w/2)*sc, (b.y+b.h/2)*sc, 28*sc, fg)
 }
 
 func (u *UI) drawKeyboard(img *image.RGBA) {
@@ -642,16 +631,6 @@ func round(v float64) float64 {
 
 // press handles a tap at surface coordinates.
 func (u *UI) press(x, y float64) {
-	b := u.button
-	if x >= float64(b.x) && x <= float64(b.x+b.w) &&
-		y >= float64(b.y) && y <= float64(b.y+b.h) {
-		u.addRipple(b, toggleRad, x, y)
-		u.expanded = !u.expanded
-		u.composeDirty = true
-		u.dirty = true
-		logf("toggle -> expanded=%v", u.expanded)
-		return
-	}
 	if !u.expanded {
 		return
 	}

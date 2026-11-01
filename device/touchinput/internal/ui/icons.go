@@ -104,28 +104,6 @@ var (
 			inSegment(x, y, 19.5, 16.5, 9.5, 16.5, w) ||
 			inTriangle(x, y, 4, 16.5, 11, 11, 11, 22)
 	})
-
-	// Keyboard: the glyph shown on the toggle button -- a rounded frame with
-	// key dots and a space bar.
-	iconKeyboard = newIconMask(func(x, y float64) bool {
-		const w = 2.2
-		if inRoundRect(x, y, 2.5, 6.5, 21.5, 17.5, 2.6) &&
-			!inRoundRect(x, y, 4.8, 8.8, 19.2, 15.2, 1.4) {
-			return true
-		}
-		// three rows of dots
-		for row := 0; row < 2; row++ {
-			for col := 0; col < 4; col++ {
-				cx := 7.0 + float64(col)*3.2
-				cy := 10.4 + float64(row)*2.6
-				if math.Hypot(x-cx, y-cy) <= 0.85 {
-					return true
-				}
-			}
-		}
-		// space bar
-		return inRect(x, y, 8.2, 14.0, 15.8, 15.0) || w < 0
-	})
 )
 
 // blit draws the mask into img, scaled to size and centred on centre.

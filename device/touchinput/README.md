@@ -5,9 +5,10 @@ Go.  It appears when a text field wants input and disappears when it goes away,
 and it feeds Chinese through fcitx5.
 
 Status: **working.**  The keyboard is a `wlr-layer-shell` overlay surface: it
-sits above Plasma Mobile's panels and its app launcher, it survives the task
-switcher, and its toggle button stays visible and tappable in all of those
-places.  See "Why a layer surface" for what went wrong with a plain window.
+sits above Plasma Mobile's panels and its app launcher and it survives the task
+switcher.  It is shown and hidden from a tray icon in the task panel (see
+"Showing and hiding"); it no longer draws a button of its own.  See "Why a
+layer surface" for what went wrong with a plain window.
 
 ## The arrangement that works
 
@@ -49,7 +50,7 @@ The keyboard used to be an ordinary `xdg_toplevel` docked by a KWin window rule
 with `acceptfocus=false`, raised by a KWin script that set `keepAbove`.  Two
 things were wrong with that, and they are the two bugs this change fixes:
 
-* **The app launcher covered the toggle button.**  Plasma Mobile's fullscreen
+* **The app launcher covered the surface.**  Plasma Mobile's fullscreen
   launcher is `plasmashell`'s own desktop window, and opening it *minimises every
   other window*.  Measured with a KWin script that dumps the window list:
 
@@ -65,7 +66,8 @@ things were wrong with that, and they are the two bugs this change fixes:
 * **The panels outranked it.**  A window rule's `keepAbove` lands the window in
   KWin's AboveLayer (`layer=3`); the Plasma panels are layer-shell `top`
   surfaces and live in TopLayer (`layer=9`).  No window rule can cross that, so
-  the toggle button disappeared under anything the shell drew in the top layer.
+  the surface (then still a button) disappeared under anything the shell drew
+  in the top layer.
 
 A layer surface fixes both at once: it is not a window, so the shell never
 minimises it and it never appears in the task switcher, and the `overlay` layer
@@ -86,12 +88,12 @@ Verified on the device after removing both the window rule and the KWin script
 (the geometry still comes out as `0,526 1440x338`, so nothing else was doing the
 work):
 
-* the toggle button is visible on top of the fullscreen app launcher;
-* tapping it expands the keyboard over the launcher;
+* the surface stays on top of the fullscreen app launcher;
+* the keyboard expands over the launcher;
 * tapping `q w e r t` typed `qwert` into the launcher's search field, i.e. focus
   stayed with the field and not with the keyboard;
-* opening the task switcher and closing it leaves the button visible and
-  tappable, and the keyboard no longer shows up as a task in the switcher;
+* opening the task switcher and closing it leaves the surface alone, and the
+  keyboard no longer shows up as a task in the switcher;
 * fcitx5 still gets the keys: `n i h a o` brings up `1. 你好 2. 👌 ...` above the
   keyboard.
 
@@ -206,8 +208,8 @@ DejaVu faces disagreed about those characters, and at keyboard sizes the result
 was uneven.
 
 `roundInset` used to return the *complement* of the quarter circle, which carved
-the corners inwards: every key looked like it had bow-ties at its edges and the
-toggle button came out as an hourglass.  That function now returns the half
+the corners inwards: every key looked like it had bow-ties at its edges (the
+toggle button, when there was one, came out as an hourglass).  That function now returns the half
 width of the row inside the corner.
 
 ## Why not Gio
@@ -227,15 +229,22 @@ regions) and the design layer is implemented directly in it.
 
 ## Showing and hiding
 
-The keyboard does not react to focus.  It starts collapsed, showing only a
-56x56 button at the bottom right with a keyboard glyph; tapping it expands the
-keys, tapping it again collapses them.
+The keyboard does not react to focus.  It starts hidden and is shown or hidden
+from its tray icon: the process publishes a `StatusNotifierItem`
+(`internal/tray`) with `ItemIsMenu=false`, so a tap on the icon in the task
+panel calls `Activate` and toggles the keys.  There is no button on the
+keyboard surface itself any more.
 
-Because the surface is always mapped, "collapsed" means: the rest of the surface
-is painted fully transparent and the input region is narrowed to the button
-alone, so taps outside it fall through to whatever is underneath.  A layer
-surface with `keyboard_interactivity=none` never takes focus, so this works
-without the surface being activated.
+Because the surface is always mapped, "hidden" means: the surface is painted
+fully transparent and its input region is empty, so taps fall through to
+whatever is underneath.  A layer surface with `keyboard_interactivity=none`
+never takes focus, so this works without the surface being activated.
+
+The tray icon only appears because the task panel was patched to host
+`StatusNotifierItem`s (see `plasma-mobile/source.json`); without that patch the
+keyboard would have no way to be shown.  The item registers itself with
+`org.kde.StatusNotifierWatcher` and retries for thirty seconds, because the
+watcher can still be starting when the session comes up.
 
 The fcitx5 backend is still registered so fcitx5 recognises the keyboard, but
 `ProcessVisibilityEvent` is ignored -- fcitx5 never called it anyway.
@@ -250,4 +259,4 @@ The fcitx5 backend is still registered so fcitx5 recognises the keyboard, but
   placed at the bottom edge; on this device the candidate strip is drawn at the
   caret, so it stays clear.
 * `ProcessVisibilityEvent` is ignored, so the keyboard never shows itself when a
-  text field is focused: the toggle button is the only way in.
+  text field is focused: the tray icon is the only way in.

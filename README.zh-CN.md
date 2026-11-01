@@ -245,6 +245,8 @@ Plasma Mobile 没有画托盘图标的地方：应用向 `org.kde.StatusNotifier
 
 能做与不能做：图标会出现，点一下等于激活该条目，右键或长按会向应用要它自己的右键菜单。只发布 `IconPixmap` 的条目也支持（走一个图像 provider），状态为 `Passive` 的条目会变暗。
 
+屏幕键盘也用它：键盘进程发布一个 `StatusNotifierItem`，`Activate` 就是显示/隐藏键盘，所以它不再画那个悬浮按钮（见 [`device/touchinput`](device/touchinput/README.md) 和 `tools/deploy-liuqin-touchinput.py`）。
+
 通过 `com.canonical.dbusmenu` 发布菜单的应用（Ayatana indicator：FlClash、Telegram、大多数 AppIndicator）不响应 `Activate`/`ContextMenu`，需要 host 自己把菜单画出来。模型会读这份菜单（`AboutToShow`、`GetLayout`，点击时回 `Event`），图标则在一个覆盖层里把它画出来：锚在面板上的弹窗会被裁到面板那 60 像素高的窗口里，所以菜单画在一个由合成器定位的全屏无边框窗口里，菜单本身摆在面板上方左下的位置；点别处就关闭。某个应用是否出现取决于它自己：Tailscale 的守护进程不发布托盘条目，所以它需要自己的界面（`tailscale web --listen 127.0.0.1:5252`，或在别的机器上 `ssh -L 5252:127.0.0.1:5252`）。
 
 ## 使用与维护

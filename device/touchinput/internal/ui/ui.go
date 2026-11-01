@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
@@ -99,11 +100,13 @@ type UI struct {
 	configured      bool
 	configureSerial uint32
 	inputRegion     *client.Region
-	buttonRegion    *client.Region
+	// emptyRegion takes no input at all: it is what the surface uses while the
+	// keyboard is hidden, now that there is no toggle button to tap.
+	emptyRegion *client.Region
 
-	// expanded is false while only the toggle button is shown.
+	// expanded is false while the keyboard is hidden; the tray icon is what
+	// shows and hides it.
 	expanded   bool
-	showToggle bool
 	dirty      bool
 	shift      bool
 	symbols    bool
@@ -112,12 +115,24 @@ type UI struct {
 	lastX      float64
 	lastY      float64
 	boxes      []keyBox
-	button     keyBox
 	ripples    []ripple
 	pressed    int
 	symbolsIME bool
 
 	face font.Face
+
+	// The tray icon runs on the D-Bus goroutine, the loop in Run owns the rest,
+	// so a toggle is a request the loop picks up.
+	mu              sync.Mutex
+	toggleRequested bool
+}
+
+// Toggle asks the run loop to show or hide the keyboard.  It is safe to call
+// from another goroutine.
+func (u *UI) Toggle() {
+	u.mu.Lock()
+	u.toggleRequested = true
+	u.mu.Unlock()
 }
 
 // New connects to the compositor and creates the (initially hidden) keyboard.
@@ -283,19 +298,6 @@ func newFace(size float64) (font.Face, error) {
 		DPI:     72,
 		Hinting: font.HintingFull,
 	})
-}
-
-// toggleRect is the small button at the bottom right that shows and hides the
-// keyboard.  It sits in the empty strip below the last key row, so it never
-// covers a key.
-func (u *UI) toggleRect() keyBox {
-	const size = 56
-	return keyBox{
-		x: u.width - size - 6,
-		y: u.height - size - 6,
-		w: size,
-		h: size,
-	}
 }
 
 // layout computes the key rectangles for the current layer.
