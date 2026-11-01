@@ -303,12 +303,12 @@ item that reports `Passive` status is dimmed.
 
 Applications that publish their menu over `com.canonical.dbusmenu` (Ayatana
 indicators: FlClash, Telegram, most AppIndicators) ignore `Activate` and
-`ContextMenu` and expect the host to draw that menu. The model reads the menu,
-but drawing it from the bottom panel does not work in this shell: a QML popup
-anchored to the panel is clipped to the panel's own 60-pixel window (only the
-first row is visible, whatever offset it is opened at), and a plain window
-cannot be positioned on Wayland. Until the menu is rendered from the shell's
-full-screen desktop window instead, those items show no menu. Whether an application shows up
+`ContextMenu` and expect the host to draw that menu. The model reads it
+(`AboutToShow`, `GetLayout`, then `Event` on a click) and the icons draw it as
+an overlay: a popup anchored to the panel would be clipped to the panel's own
+60-pixel window, so the menu is drawn inside a full-screen frameless window
+that the compositor positions for us, with the menu itself at the bottom left
+above the panel. A tap anywhere else closes it. Whether an application shows up
 at all is up to the application: Tailscale's daemon does not publish a tray
 item, so it needs its own GUI (`tailscale web --listen 127.0.0.1:5252`, or
 `ssh -L 5252:127.0.0.1:5252` from another machine).

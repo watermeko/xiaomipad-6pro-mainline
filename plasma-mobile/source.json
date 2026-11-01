@@ -2,7 +2,7 @@
     "comment": "The patched Plasma Mobile checkout the task panel is built from. tools/deploy-liuqin-taskpanel.py builds it on the tablet; the patch adds a StatusNotifierItem host to the navigation panel (containments/taskpanel).",
     "repository": "https://github.com/watermeko/plasma-mobile",
     "branch": "liuqin/taskpanel-tray",
-    "commit": "ef7ff82",
+    "commit": "c85ae96",
     "upstream": "https://invent.kde.org/plasma/plasma-mobile",
     "upstream_tag": "v6.6.5",
     "package_version": "6.6.5-0ubuntu0.1"
